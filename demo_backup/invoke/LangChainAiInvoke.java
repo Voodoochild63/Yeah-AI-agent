@@ -1,4 +1,4 @@
-package com.yupi.yuaiagent.demo.invoke;
+package com.yeah.yeahaiagent.demo.invoke;
 
 import dev.langchain4j.community.model.dashscope.QwenChatModel;
 import dev.langchain4j.model.chat.ChatLanguageModel;

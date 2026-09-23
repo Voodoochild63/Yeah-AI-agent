@@ -1,4 +1,4 @@
-package com.yupi.yuaiagent.rag;
+package com.yeah.yeahaiagent.rag;
 
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;

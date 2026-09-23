@@ -1,4 +1,4 @@
-package com.yupi.yuaiagent.demo.invoke;
+package com.yeah.yeahaiagent.demo.invoke;
 
 /**
  * 仅用于测试获取 API Key

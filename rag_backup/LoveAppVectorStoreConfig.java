@@ -1,4 +1,4 @@
-package com.yupi.yuaiagent.rag;
+package com.yeah.yeahaiagent.rag;
 
 import jakarta.annotation.Resource;
 import org.springframework.ai.document.Document;

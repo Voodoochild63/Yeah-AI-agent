@@ -1,4 +1,4 @@
-package com.yupi.yuaiagent.demo.invoke;
+package com.yeah.yeahaiagent.demo.invoke;
 
 import cn.hutool.http.HttpRequest;
 import cn.hutool.json.JSONObject;

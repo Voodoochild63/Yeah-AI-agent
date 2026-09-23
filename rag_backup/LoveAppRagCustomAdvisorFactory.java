@@ -1,4 +1,4 @@
-package com.yupi.yuaiagent.rag;
+package com.yeah.yeahaiagent.rag;
 
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;

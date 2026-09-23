@@ -1,4 +1,4 @@
-package com.yupi.yuaiagent.rag;
+package com.yeah.yeahaiagent.rag;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;

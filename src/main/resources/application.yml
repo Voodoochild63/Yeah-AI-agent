@@ -1,6 +1,6 @@
 spring:
   application:
-    name: yu-ai-agent
+    name: yeah-ai-agent
   profiles:
     active: local
 # 临时注释掉，便于大家开发调试和部署（实际填写 PgVector 数据库信息）
@@ -9,6 +9,11 @@ spring:
 #    username: root
 #    password: 123456
   # 新配置：通过 OpenAI 兼容协议接入 Gemini
+  # Spring AI 的 OpenAI/Gemini 客户端复用 Boot 自动配置的 RestClient
+  http:
+    client:
+      connect-timeout: 10s
+      read-timeout: 120s
   ai:
     # 关闭远程 Embedding，避免 Gemini OpenAI 兼容端点 404
     model:
@@ -47,6 +52,9 @@ server:
   port: 8123
   servlet:
     context-path: /api
+  error:
+    # 规划失败时把原因带回响应，前端不再只看到空的 500
+    include-message: always
 # springdoc-openapi config
 springdoc:
   swagger-ui:
@@ -58,7 +66,7 @@ springdoc:
   group-configs:
     - group: 'default'
       paths-to-match: '/**'
-      packages-to-scan: com.yupi.yuaiagent.controller
+      packages-to-scan: com.yeah.yeahaiagent.controller
 # knife4j config
 knife4j:
   enable: true
@@ -68,6 +76,14 @@ knife4j:
 search-api:
   # 需要替换为你自己的 key
   api-key: 你的 API Key
+# 智能停车：默认本地 mock，配置 google api-key 后可切换
+parking:
+  provider: mock # 可选 mock / google
+  google:
+    api-key: ${PARKING_GOOGLE_API_KEY:}
+serper:
+  api-key: aca29742d1933b74fa6feeacab44bb230f69f50d
+  base-url: https://google.serper.dev
 # 修改日志级别，查看 Spring AI 更多调用细节
 logging:
   level:

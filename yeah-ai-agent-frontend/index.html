@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Yeah AI · 悉尼本地生活行程助手</title>
+    <meta name="description" content="悉尼本地生活 AI 行程规划助手" />
+    <script>
+      // 在首屏渲染前同步决定主题，避免刷新时闪一下白屏（FOUC）
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('yeah-ai-theme')
+          var hour = new Date().getHours()
+          var systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          var clockDark = hour >= 18 || hour < 6
+          var dark = stored === 'dark' || (stored !== 'light' && (systemDark || clockDark))
+          document.documentElement.classList.toggle('dark', dark)
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+        } catch (e) {
+          /* localStorage 不可用时静默忽略，交给运行时兜底 */
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
