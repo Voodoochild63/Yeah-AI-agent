@@ -1,25 +1,32 @@
 package com.yeah.yeahaiagent.app;
 
 import com.yeah.yeahaiagent.advisor.MyLoggerAdvisor;
-import com.yeah.yeahaiagent.advisor.ReReadingAdvisor;
-import com.yeah.yeahaiagent.chatmemory.FileBasedChatMemory;
 import com.yeah.yeahaiagent.model.dto.ItineraryNode;
 import com.yeah.yeahaiagent.model.dto.ItineraryPlan;
-import com.yeah.yeahaiagent.model.dto.ParkingInfo;
 import com.yeah.yeahaiagent.model.dto.SunsetEvaluation;
 import com.yeah.yeahaiagent.model.enums.LanguageEnum;
 import com.yeah.yeahaiagent.model.dto.RagContext;
+import com.yeah.yeahaiagent.service.ItineraryCandidateAttacher;
+import com.yeah.yeahaiagent.service.ItineraryDayScope;
+import com.yeah.yeahaiagent.service.ItineraryOpeningHoursChecker;
+import com.yeah.yeahaiagent.service.ItineraryParkingAttacher;
 import com.yeah.yeahaiagent.service.ItineraryPipelineService;
-import com.yeah.yeahaiagent.service.ParkingService;
+import com.yeah.yeahaiagent.service.ItinerarySafetyGuardrail;
+import com.yeah.yeahaiagent.service.ItinerarySessionService;
+import com.yeah.yeahaiagent.service.ItineraryTemporalPlanner;
+import com.yeah.yeahaiagent.service.ItineraryTimelineNormalizer;
+import com.yeah.yeahaiagent.service.ItineraryTransitPlanner;
+import com.yeah.yeahaiagent.service.ItineraryPlanSkeletonService;
+import com.yeah.yeahaiagent.service.ItineraryRequestFingerprint;
+import com.yeah.yeahaiagent.service.ItinerarySunsetBinder;
 import com.yeah.yeahaiagent.service.PoiRagService;
 import com.yeah.yeahaiagent.service.WeatherService;
+import com.yeah.yeahaiagent.resilience.UpstreamApiGuard;
 
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.client.advisor.api.Advisor;
-import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.memory.InMemoryChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
@@ -27,7 +34,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClientResponseException;
@@ -50,9 +56,29 @@ public class ItineraryApp {
 
     private final WeatherService weatherService;
 
-    private final ParkingService parkingService;
+    private final ItineraryParkingAttacher itineraryParkingAttacher;
+
+    private final ItineraryTransitPlanner itineraryTransitPlanner;
 
     private final ItineraryPipelineService itineraryPipelineService;
+
+    private final ItineraryOpeningHoursChecker itineraryOpeningHoursChecker;
+
+    private final ItineraryCandidateAttacher itineraryCandidateAttacher;
+
+    private final ItinerarySunsetBinder itinerarySunsetBinder;
+
+    private final ItinerarySessionService itinerarySessionService;
+
+    private final ItineraryTemporalPlanner itineraryTemporalPlanner;
+
+    private final ItinerarySafetyGuardrail itinerarySafetyGuardrail;
+
+    private final ItineraryTimelineNormalizer itineraryTimelineNormalizer;
+
+    private final UpstreamApiGuard upstreamApiGuard;
+
+    private final ItineraryPlanSkeletonService itineraryPlanSkeletonService;
 
     private static final String SYSTEM_PROMPT_ZH = """
         你是一个专业的智能行程规划调度专家。你的职责是协助用户合理安排一天的出行路线。
@@ -61,11 +87,14 @@ public class ItineraryApp {
         1. 必须根据用户的意图，从用户的地点备选池中（如 Brunch、咖啡厅、Fine Dining、景点）合理选择并排序。
         2. 必须考虑地理邻近度与逻辑顺序（例如：上午 Brunch -> 下午咖啡/景点 -> 晚上 Fine Dining）。
         3. 在编排路线时，若已绑定外部工具，优先调用天气与交通距离工具获取实际通行时间。
-        4. 【动态局部修正规则】：当用户要求更换某个节点（如“下雨去不了某店”、“某店太远了换一家”）时，
+        4. 【动态局部修正规则】：当用户要求更换某个节点（如“下雨去不了某店”、“某店太远了换一家”、“把XX换成YY”）时，
            只能精准替换目标节点或给出 2 个室内备选方案供用户选择，禁止无故重算并推翻其他无冲突的既定行程节点。
+           若用户只是提出新探索诉求（想吃 gelato、还想喝杯咖啡、想去散步）且没有说“换成/换掉/不要XX了”，必须追加新节点，严禁覆盖末站或其他未点名的原行程。
         5. 输出时保持条理清晰，明确标注到达时间、停留建议及路途耗时。
-        6. 【长度硬限制】schedule 节点数量严格限制在 4-5 个，禁止超过 5 个。summary、recommendationReason、photoTip、transitToNext、stayDuration 以及任何理由与贴士一律控制在 25 字以内。detailedDescription 不受这 25 字限制。
+        6. 【长度与时段】半日游日常节点默认 4 个，多轮对话可自然扩到 5–6 站，只要当天跨度不超过 22:00；不要因为已经有 3/4 站就拒绝追加，也不要为了凑 4 站去覆盖最后一张卡。若最后一站离开时刻 >= 16:30 或用户要看落日，服务端会再追加就近落日节点，模型先排 4 站即可，不要自己硬塞天文台山。一日游（用户说一日游/全天/full day）必须编排到晚间 20:30-21:30，节点可到 7–8 个。完整动线：上午活动 -> 午餐 -> 下午活动/咖啡 -> 黄金落日打卡 -> 晚餐（约 18:30，必须在落日窗口结束后）-> 可选夜市/海港散步/酒吧清吧/甜品。落日不是一日游的终点。summary、recommendationReason、photoTip、transitToNext、stayDuration 以及任何理由与贴士一律控制在 25 字以内。detailedDescription 不受这 25 字限制。
         7. 【整体规划描述】detailedDescription 必须写一段约 60-120 字的完整规划思路与体验亮点，覆盖路线设计理念、街区氛围、光影或活动特色，以及一天的整体节奏。当 lang 为 zh 时用简体中文；店名、地标、街道名仍保持官方英文。summary 只保留一句话简述，不要把这段长描述塞进 summary。
+        8. 【落日时域锚点】黄金落日本身是带严格时间窗口的 Stop。看的是最后一站离开时刻（到达+停留），不是到达时刻。14:52 到达但停留 2 小时、16:52 离开，属于傍晚，应由服务端插入就近落日节点。17:15-18:15（或当日黄金窗）必须锁定为落日黄金窗口：此区间严禁安排 75 分钟正餐；晚饭到达时间必须 >= 落日结束时间（例如 18:15 之后）。观景点必须就近（上一站街区，直线约 5km），严禁从东区跨去 Observatory Hill / CBD。
+        9. 【饮酒安全】若某站是酒吧/Pub/Brewery/Nightclub，禁止推荐自驾，交通只写步行、公交或 Uber，不要给停车场。
         
         【停车方案规则 (PARKING LOGIC)】
         1. 绝对严禁凭空捏造具体的商业停车场名字或跨区推荐停车场（如绝不可跨区推荐 Circular Quay 的车库）！不要输出 parkingName、address、rating、虚假步行距离。
@@ -119,9 +148,12 @@ public class ItineraryApp {
         2. Respect geography and a natural sequence (morning brunch -> afternoon coffee/sights -> evening dining).
         3. If external tools are bound, prefer live weather and transit times.
         4. Local correction: when the user asks to swap one stop, replace only that node or offer two indoor alternatives. Do not rebuild unrelated nodes.
+           If they only add a new desire (I want gelato / another coffee / a walk) without saying swap/replace/change, you MUST append a new stop. Never overwrite the last card just to keep the list short.
         5. Keep the timeline clear: arrival time, stay duration, and transit to the next stop.
-        6. Length cap: strictly 4-5 schedule nodes, never more than 5. Keep summary, reasons, photo tips, transit notes, and stay notes within 25 words each. detailedDescription is exempt from that cap.
+        6. Length and hours: half-day defaults to 4 daily stops and may grow to 5–6 in follow-up turns if the day still ends before 22:00 — never refuse an extra stop just because the list already has 3 or 4 cards, and never overwrite the last card to stay at 4. If the last stop's departure (arrival + stay) is 16:30 or later, or the user asked for sunset, the server will append a nearby sunset node — do not invent Observatory Hill yourself. A full-day request (一日游 / full day / all day) MUST run until 20:30-21:30, up to 7–8 stops: morning activity -> lunch -> afternoon activity/coffee -> golden-hour sunset -> dinner around 18:30 AFTER the sunset window -> optional night market / harbour walk / bar / dessert. Sunset is not the end of a full day. Keep summary, reasons, photo tips, transit notes, and stay notes within 25 words each. detailedDescription is exempt from that cap.
         7. Overall narrative: detailedDescription must be one paragraph of about 60-120 words covering the route idea, neighbourhood atmosphere, light or activity character, and the day's pacing. When lang is en, write it in English. Keep shop, landmark, and street names in their official English. summary stays a single sentence; do not paste this paragraph into summary.
+        8. Sunset time-anchor: golden hour is itself a Stop with a hard window. Use last-stop departure (arrival + stay), not arrival. 14:52 arrival with a 2-hour stay leaves at 16:52 and should get a nearby sunset node from the server. Lock 17:15-18:15 (or today's golden-hour window): never put a 75-minute sit-down dinner inside it. Dinner arrival MUST be at or after the sunset window end (e.g. 18:15+). Viewpoints must stay in the previous suburb (about 5km). Never jump from the eastern suburbs to Observatory Hill or the CBD.
+        9. Alcohol safety: if a stop is a bar / pub / brewery / nightclub, never recommend driving. Transit must be walking, public transport, or Uber. Do not attach parking.
         
         [Parking — PARKING LOGIC]
         1. Never invent a commercial car-park name or recommend a garage in another suburb (never send someone to Circular Quay parking for a Chippendale stop). Do not output parkingName, address, rating, or a fake walking distance.
@@ -179,12 +211,32 @@ public class ItineraryApp {
      * @param weatherService
      */
     public ItineraryApp(ChatModel dashscopeChatModel, PoiRagService poiRagService,
-                        WeatherService weatherService, ParkingService parkingService,
-                        ItineraryPipelineService itineraryPipelineService) {
+                        WeatherService weatherService, ItineraryParkingAttacher itineraryParkingAttacher,
+                        ItineraryTransitPlanner itineraryTransitPlanner,
+                        ItineraryPipelineService itineraryPipelineService,
+                        ItineraryOpeningHoursChecker itineraryOpeningHoursChecker,
+                        ItineraryCandidateAttacher itineraryCandidateAttacher,
+                        ItinerarySunsetBinder itinerarySunsetBinder,
+                        ItinerarySessionService itinerarySessionService,
+                        ItineraryTemporalPlanner itineraryTemporalPlanner,
+                        ItinerarySafetyGuardrail itinerarySafetyGuardrail,
+                        ItineraryTimelineNormalizer itineraryTimelineNormalizer,
+                        UpstreamApiGuard upstreamApiGuard,
+                        ItineraryPlanSkeletonService itineraryPlanSkeletonService) {
         this.poiRagService = poiRagService;
         this.weatherService = weatherService;
-        this.parkingService = parkingService;
+        this.itineraryParkingAttacher = itineraryParkingAttacher;
+        this.itineraryTransitPlanner = itineraryTransitPlanner;
         this.itineraryPipelineService = itineraryPipelineService;
+        this.itineraryOpeningHoursChecker = itineraryOpeningHoursChecker;
+        this.itineraryCandidateAttacher = itineraryCandidateAttacher;
+        this.itinerarySunsetBinder = itinerarySunsetBinder;
+        this.itinerarySessionService = itinerarySessionService;
+        this.itineraryTemporalPlanner = itineraryTemporalPlanner;
+        this.itinerarySafetyGuardrail = itinerarySafetyGuardrail;
+        this.itineraryTimelineNormalizer = itineraryTimelineNormalizer;
+        this.upstreamApiGuard = upstreamApiGuard;
+        this.itineraryPlanSkeletonService = itineraryPlanSkeletonService;
 //        // 初始化基于文件的对话记忆
 //        String fileDir = System.getProperty("user.dir") + "/tmp/chat-memory";
 //        ChatMemory chatMemory = new FileBasedChatMemory(fileDir);
@@ -255,52 +307,24 @@ public class ItineraryApp {
     }
 
     public ItineraryPlan doPlanItinerary(String message, String chatId, String lang, RagContext ragContext) {
-        LanguageEnum language = LanguageEnum.fromCode(lang);
-        SunsetEvaluation sunsetEvaluation = null;
-        try {
-            ItineraryPipelineService.PipelineContext pipeline;
-            try {
-                pipeline = itineraryPipelineService.retrieve(message, ragContext);
-            } catch (RuntimeException retrieveEx) {
-                log.warn("agentic retrieve failed, continue with empty verified pool", retrieveEx);
-                pipeline = new ItineraryPipelineService.PipelineContext(List.of(), List.of());
-            }
-            String systemMessage = buildCriticalLanguageRule(language)
-                    + "\n\n"
-                    + language.text(SYSTEM_PROMPT_ZH, SYSTEM_PROMPT_EN)
-                    + "\n"
-                    + language.text(
-                    "请务必根据用户需求生成结构化行程方案，包含时间轴节点与恶劣天气/拥堵时的备选建议。",
-                    "Always return a structured itinerary with a timeline and backup suggestions for rain or congestion.");
-            systemMessage += "\n" + buildAgenticConstraint(pipeline, ragContext, language);
-            String ragResult = poiRagService.searchPoi(message);
-            if (ragResult != null && !ragResult.isBlank()) {
-                systemMessage += "\n"
-                        + language.text(
-                        "【私藏打卡候选池】：以下是根据用户喜好从私域知识库中匹配出的地点候选，请优先参考并选择这些地点编排行程。poiName 必须原样使用候选里的官方英文店名，禁止翻译：\n",
-                        "[Private POI pool] Use these matched venues as the first choice when building the route. Context may be in another language; keep official place names and write all output fields in the required language:\n")
-                        + ragResult;
-            }
-            sunsetEvaluation = weatherService.evaluateTodaySunset(language.getCode());
-            systemMessage += "\n" + buildSunsetRule(sunsetEvaluation, language);
-            if (isDrivingScenario(message)) {
-                systemMessage += "\n" + language.text(
-                        "【自驾场景】用户可能开车出行。请在 commute/transitToNext 中优先考虑停车与步行衔接；不要编造具体停车场名称。每个需要停车的节点只给 parkingSearchKeyword（parking near 店名 街区），由 Google Maps 打开真实车位。同一街区连续步行节点只保留第一处停车入口。",
-                        "[Driving] The user may be driving. Prefer parking-to-walking connections. Do not invent garage names. Each stop that needs a car only gets parkingSearchKeyword (parking near venue suburb) so Google Maps can show real bays. Keep parking only on the first stop of a walkable cluster.");
-            }
-            String anchorRule = buildAnchorStoreRule(message, language);
-            if (!anchorRule.isBlank()) {
-                systemMessage += "\n" + anchorRule;
-            }
-            systemMessage += "\n" + buildCriticalLanguageRule(language);
+        String key = ItineraryRequestFingerprint.key(message, lang, ragContext);
+        ItineraryPlan itineraryPlan = itineraryPlanSkeletonService.getOrCompute(key,
+                () -> generatePlan(message, chatId, lang, ragContext));
+        if (itineraryPlan != null) {
+            itinerarySessionService.begin(itineraryPlan);
+        }
+        log.info("itineraryPlan: {}", itineraryPlan);
+        return itineraryPlan;
+    }
 
+    private ItineraryPlan generatePlan(String message, String chatId, String lang, RagContext ragContext) {
+        LanguageEnum language = LanguageEnum.fromCode(lang);
+        try {
+            ItineraryPipelineService.PipelineContext pipeline = retrieveVerifiedPool(message, ragContext);
+            SunsetEvaluation sunsetEvaluation = weatherService.evaluateTodaySunset(language.getCode());
+            String systemMessage = assembleSystemPrompt(message, ragContext, pipeline, sunsetEvaluation, language);
             ItineraryPlan itineraryPlan = requestPlan(message, chatId, systemMessage, language);
-            if (itineraryPlan != null) {
-                itineraryPlan.setSunsetEvaluation(sunsetEvaluation);
-                attachParking(itineraryPlan, language.getCode());
-                applyBilingualCopy(itineraryPlan, language);
-            }
-            log.info("itineraryPlan: {}", itineraryPlan);
+            applyPostGeneration(itineraryPlan, sunsetEvaluation, language, pipeline, message);
             return itineraryPlan;
         } catch (ResponseStatusException ex) {
             throw ex;
@@ -308,106 +332,90 @@ public class ItineraryApp {
             log.error("itinerary plan failed. message={}, chatId={}, lang={}", message, chatId, lang, ex);
             if (isRateLimited(ex)) {
                 throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
-                        "Gemini 免费额度已用完（gemini-3.6-flash 每天 20 次）。请稍后再试，或更换有额度的 API Key。", ex);
+                        "当前访问过于频繁，请稍后再试。已触发本地限流保护，避免上游接口过载。", ex);
             }
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, summarizePlanFailure(ex), ex);
         }
     }
 
-    /**
-     * 为行程节点挂载 Google Maps 停车检索。同一步行簇只保留第一处入口，不写入具体车库名。
-     */
-    private void attachParking(ItineraryPlan plan, String lang) {
-        List<ItineraryNode> schedule = plan.getSchedule();
-        if (schedule == null || schedule.isEmpty()) {
+    private ItineraryPipelineService.PipelineContext retrieveVerifiedPool(String message, RagContext ragContext) {
+        try {
+            return itineraryPipelineService.retrieve(message, ragContext);
+        } catch (RuntimeException retrieveEx) {
+            log.warn("agentic retrieve failed, continue with empty verified pool", retrieveEx);
+            return new ItineraryPipelineService.PipelineContext(List.of(), List.of());
+        }
+    }
+
+    private String assembleSystemPrompt(String message,
+                                        RagContext ragContext,
+                                        ItineraryPipelineService.PipelineContext pipeline,
+                                        SunsetEvaluation sunsetEvaluation,
+                                        LanguageEnum language) {
+        StringBuilder systemMessage = new StringBuilder();
+        systemMessage.append(buildCriticalLanguageRule(language))
+                .append("\n\n")
+                .append(language.text(SYSTEM_PROMPT_ZH, SYSTEM_PROMPT_EN))
+                .append('\n')
+                .append(language.text(
+                        "请务必根据用户需求生成结构化行程方案，包含时间轴节点与恶劣天气/拥堵时的备选建议。",
+                        "Always return a structured itinerary with a timeline and backup suggestions for rain or congestion."))
+                .append('\n')
+                .append(buildAgenticConstraint(pipeline, ragContext, language));
+        String ragResult = poiRagService.searchPoi(message);
+        if (ragResult != null && !ragResult.isBlank()) {
+            systemMessage.append('\n')
+                    .append(language.text(
+                            "【私藏打卡候选池】：以下是根据用户喜好从私域知识库中匹配出的地点候选，请优先参考并选择这些地点编排行程。poiName 必须原样使用候选里的官方英文店名，禁止翻译：\n",
+                            "[Private POI pool] Use these matched venues as the first choice when building the route. Context may be in another language; keep official place names and write all output fields in the required language:\n"))
+                    .append(ragResult);
+        }
+        systemMessage.append('\n').append(buildSunsetRule(sunsetEvaluation, message, language));
+        if (isDrivingScenario(message)) {
+            systemMessage.append('\n').append(language.text(
+                    "【自驾场景】用户可能开车出行。请在 commute/transitToNext 中优先考虑停车与步行衔接；不要编造具体停车场名称。每个需要停车的节点只给 parkingSearchKeyword（parking near 店名 街区），由 Google Maps 打开真实车位。同一街区连续步行节点只保留第一处停车入口。",
+                    "[Driving] The user may be driving. Prefer parking-to-walking connections. Do not invent garage names. Each stop that needs a car only gets parkingSearchKeyword (parking near venue suburb) so Google Maps can show real bays. Keep parking only on the first stop of a walkable cluster."));
+        }
+        String anchorRule = buildAnchorStoreRule(message, language);
+        if (!anchorRule.isBlank()) {
+            systemMessage.append('\n').append(anchorRule);
+        }
+        systemMessage.append('\n').append(buildCriticalLanguageRule(language));
+        return systemMessage.toString();
+    }
+
+    private void applyPostGeneration(ItineraryPlan itineraryPlan,
+                                     SunsetEvaluation sunsetEvaluation,
+                                     LanguageEnum language,
+                                     ItineraryPipelineService.PipelineContext pipeline,
+                                     String message) {
+        if (itineraryPlan == null) {
             return;
         }
-        LanguageEnum language = LanguageEnum.fromCode(lang);
-        boolean lastHadParking = false;
-        for (int i = 0; i < schedule.size(); i++) {
-            ItineraryNode node = schedule.get(i);
-            if (node == null) {
-                continue;
-            }
-            boolean walkingFromPrevious = i > 0
-                    && isWalkingTransit(schedule.get(i - 1).getTransitToNext());
-            if (walkingFromPrevious && lastHadParking) {
-                node.setParkingSearchKeyword(null);
-                node.setParkingTips(null);
-                node.setParkingInfo(ParkingInfo.none(null));
-                continue;
-            }
-            String keyword = resolveParkingSearchKeyword(node);
-            String tips = resolveParkingTips(node, language);
-            node.setParkingSearchKeyword(keyword);
-            node.setParkingTips(tips);
-            node.setParkingInfo(ParkingInfo.mapsLink(keyword, tips));
-            lastHadParking = true;
+        if (pipeline != null) {
+            itineraryTransitPlanner.rememberPlaces(pipeline.verifiedPlaces());
         }
-    }
-
-    private static String resolveParkingSearchKeyword(ItineraryNode node) {
-        String existing = firstFilled(node.getParkingSearchKeyword(),
-                node.getParkingInfo() == null ? null : node.getParkingInfo().parkingSearchKeyword());
-        if (existing != null && existing.toLowerCase(Locale.ROOT).startsWith("parking near ")) {
-            return existing.replaceAll("\\s+", " ").trim();
-        }
-        String poi = node.getPoiName() == null ? "" : node.getPoiName().trim();
-        if (poi.isBlank()) {
-            return "parking near Sydney";
-        }
-        String suburb = guessSuburb(poi);
-        if (suburb == null || poi.toLowerCase(Locale.ROOT).contains(suburb.toLowerCase(Locale.ROOT))) {
-            return "parking near " + poi;
-        }
-        return "parking near " + poi + " " + suburb;
-    }
-
-    private static String resolveParkingTips(ItineraryNode node, LanguageEnum language) {
-        String existing = firstFilled(node.getParkingTips(),
-                node.getParkingInfo() == null ? null : node.getParkingInfo().tip());
-        if (existing != null) {
-            return existing;
-        }
-        return defaultParkingTips(node.getPoiName(), language);
-    }
-
-    private static String defaultParkingTips(String poiName, LanguageEnum language) {
-        String n = poiName == null ? "" : poiName.toLowerCase(Locale.ROOT);
-        if (n.contains("grounds") || n.contains("westfield") || n.contains("broadway")
-                || n.contains("mall") || n.contains("shopping")) {
-            return language.text("建议停在园区专用访客车位或直属停车场",
-                    "Use the venue visitor bays or the on-site car park.");
-        }
-        if (n.contains("circular quay") || n.contains("cbd") || n.contains("barangaroo")
-                || n.contains("town hall") || n.contains("the rocks") || n.contains("haymarket")
-                || n.contains("world square") || n.contains("opera")) {
-            return language.text("市中心车位紧张，建议提前预订商业车库",
-                    "CBD bays are tight; book a commercial garage ahead.");
-        }
-        if (n.contains("bexley") || n.contains("marrickville") || n.contains("newtown")
-                || n.contains("enmore") || n.contains("dulwich") || n.contains("leichhardt")
-                || n.contains("stanmore") || n.contains("tempe")) {
-            return language.text("居民街区建议寻找路边 1-2 小时限时或免费车位",
-                    "On residential streets, look for 1-2 hour or free kerbside parking.");
-        }
-        return language.text("建议寻找周边路边或就近车位",
-                "Look for nearby street or lot parking.");
-    }
-
-    private static String guessSuburb(String poiName) {
-        String normalized = poiName.toLowerCase(Locale.ROOT);
-        String[] suburbs = {
-                "Alexandria", "Bexley", "Marrickville", "Newtown", "Chippendale", "Surry Hills",
-                "Haymarket", "The Rocks", "Bondi", "Bronte", "Glebe", "Paddington", "Darlinghurst",
-                "Redfern", "Waterloo", "Zetland", "Enmore"
-        };
-        for (String suburb : suburbs) {
-            if (normalized.contains(suburb.toLowerCase(Locale.ROOT))) {
-                return suburb;
-            }
-        }
-        return "Sydney";
+        itineraryTransitPlanner.apply(itineraryPlan, language);
+        itineraryParkingAttacher.attach(itineraryPlan, language);
+        itineraryOpeningHoursChecker.apply(
+                itineraryPlan,
+                pipeline == null ? List.of() : pipeline.verifiedPlaces(),
+                language);
+        itineraryCandidateAttacher.attach(
+                itineraryPlan,
+                pipeline == null ? List.of() : pipeline.verifiedPlaces(),
+                language);
+        itinerarySunsetBinder.apply(itineraryPlan, sunsetEvaluation, message, language);
+        itineraryTransitPlanner.apply(itineraryPlan, language);
+        itineraryTemporalPlanner.apply(itineraryPlan, language);
+        itineraryTimelineNormalizer.apply(itineraryPlan, language);
+        itineraryOpeningHoursChecker.applyStatus(
+                itineraryPlan,
+                pipeline == null ? List.of() : pipeline.verifiedPlaces(),
+                language);
+        itineraryParkingAttacher.attach(itineraryPlan, language);
+        itinerarySafetyGuardrail.apply(itineraryPlan, language);
+        applyBilingualCopy(itineraryPlan, language);
     }
 
     /**
@@ -453,33 +461,6 @@ public class ItineraryApp {
             return source;
         }
         return List.copyOf(source);
-    }
-
-    private static boolean isWalkingTransit(String transit) {
-        if (transit == null || transit.isBlank()) {
-            return false;
-        }
-        String normalized = transit.toLowerCase(Locale.ROOT);
-        return normalized.contains("步行")
-                || normalized.contains("walk")
-                || normalized.contains("on foot")
-                || normalized.contains("walkable");
-    }
-
-    private static boolean hasRecommendation(ParkingInfo info) {
-        return info != null && info.hasParkingRecommendation();
-    }
-
-    private static boolean sameParkingLot(ParkingInfo previous, ParkingInfo current) {
-        if (!hasRecommendation(previous) || !hasRecommendation(current)) {
-            return false;
-        }
-        String previousName = previous.parkingName();
-        String currentName = current.parkingName();
-        if (previousName == null || currentName == null) {
-            return false;
-        }
-        return previousName.trim().equalsIgnoreCase(currentName.trim());
     }
 
     private boolean isDrivingScenario(String message) {
@@ -597,32 +578,40 @@ public class ItineraryApp {
      * @param evaluation 落日评估结果
      * @return 提示词片段
      */
-    private String buildSunsetRule(SunsetEvaluation evaluation, LanguageEnum language) {
+    private String buildSunsetRule(SunsetEvaluation evaluation, String message, LanguageEnum language) {
+        boolean userAsked = ItinerarySunsetBinder.wantsSunset(message);
+        boolean fullDay = ItineraryDayScope.isFullDay(message);
+        StringBuilder rule = new StringBuilder();
+        rule.append(language.text(
+                "【落日时域锚点】判断的是最后一站离开时刻=到达+停留，不是到达时刻。14:52 到达、停留 2 小时则 16:52 离开，必须给落日。半日游模型先排约 4 个日常节点，多轮可再追加到 5–6 站（不超过 22:00）；服务端会在离开时刻 >= 16:30 或用户点名落日时插入就近观景点。17:15-18:15（或当日黄金窗）锁定为落日窗口：严禁在此安排 75 分钟正餐，晚饭必须在窗口结束之后到达。落日必须就近（上一站街区，直线约 5km），严禁从 Randwick / Coogee 跨去 Observatory Hill。禁止泛词 Sydney sunset。",
+                "[Sunset time-anchor] Use last-stop departure = arrival + stay, not arrival. A 14:52 arrival with a 2-hour stay leaves at 16:52 and MUST get sunset. Half-day: start with about 4 daily stops and may grow to 5–6 before 22:00 — never refuse or overwrite a stop just because the list already has 3 or 4 cards. The server inserts a nearby lookout when departure is 16:30+ or the user asked. Lock 17:15-18:15 (or today's golden hour): no 75-minute dinner inside it; dinner arrives after the window ends. Stay within ~5km of the previous suburb. Never jump from Randwick/Coogee to Observatory Hill. Never use a generic Sydney sunset query."));
+        if (fullDay) {
+            rule.append('\n').append(language.text(
+                    "【一日游晚间编排】行程终止时间 20:30-21:30。动线必须是：上午活动 -> 午餐 -> 下午活动/咖啡 -> 黄金落日打卡 -> 晚餐（约 18:30，落日结束后）-> 可选夜市/海港散步/酒吧。落日不是终点，不要在日落节点写「行程结束」。",
+                    "[Full-day evening] End between 20:30 and 21:30. Topology: morning -> lunch -> afternoon/coffee -> golden-hour sunset -> dinner around 18:30 after sunset -> optional night market / harbour walk / bar. Sunset is not the finale. Do not write End of itinerary on the sunset stop."));
+        }
+        if (userAsked) {
+            rule.append('\n').append(language.text(
+                    "用户明确想看落日：由服务端插入就近观景点，不要自己写天文台山。",
+                    "The user asked for sunset: the server will insert a nearby lookout. Do not name Observatory Hill."));
+        }
         if (evaluation == null) {
-            return "";
+            return rule.toString();
         }
         if (evaluation.recommended()) {
-            return language.text(
-                    ("【日落机位激活】今日天气极佳（日落时间 %s，最佳观赏窗口 %s）。"
-                            + "请在下午最后一个行程节点，强制安排落日打卡点（推荐 %s），"
-                            + "将其无缝拼接进 schedule 时间轴的终点！并在该节点说明中注明机位贴士：%s")
-                            .formatted(evaluation.sunsetTime(), evaluation.goldenHourWindow(),
-                                    evaluation.recommendedSpot(), evaluation.photoTip()),
-                    ("[Sunset slot] Weather is excellent today (sunset %s, golden hour %s). "
-                            + "The last afternoon stop MUST be a sunset photo spot (recommended: %s), "
-                            + "placed as the end of the schedule timeline. Include this photo tip in that node: %s")
-                            .formatted(evaluation.sunsetTime(), evaluation.goldenHourWindow(),
-                                    evaluation.recommendedSpot(), evaluation.photoTip()));
+            rule.append('\n').append(language.text(
+                    ("今日天气适合晚霞（日落 %s，黄金窗 %s）。黄金窗口必须留给落日打卡，晚饭排在窗口结束之后。")
+                            .formatted(evaluation.sunsetTime(), evaluation.goldenHourWindow()),
+                    ("Weather is good for colour (sunset %s, golden hour %s). Keep the golden-hour window for the lookout; put dinner after it ends.")
+                            .formatted(evaluation.sunsetTime(), evaluation.goldenHourWindow())));
+            return rule.toString();
         }
-        return language.text(
-                ("【天气不佳提示】今日日落条件欠佳（原因：%s）。"
-                        + "请不要在 schedule 中强行安排落日户外点，"
-                        + "而是在 backupSuggestions 列表中贴心提醒用户今日不适宜追日落，并提示：%s")
-                        .formatted(evaluation.recommendationReason(), evaluation.photoTip()),
-                ("[Poor sunset conditions] Sunset is not worth a dedicated stop (reason: %s). "
-                        + "Do not force an outdoor sunset node into the schedule. "
-                        + "Add a gentle note in backupSuggestions that today is not ideal for chasing sunset, and include: %s")
-                        .formatted(evaluation.recommendationReason(), evaluation.photoTip()));
+        rule.append('\n').append(language.text(
+                ("今日日落条件欠佳（%s）。不要在 schedule 里强行安排落日户外点；若用户没提落日，也不要在 backupSuggestions 里推销追日。")
+                        .formatted(evaluation.recommendationReason()),
+                ("Sunset conditions are poor (%s). Do not force an outdoor sunset node. If the user did not ask for sunset, do not push sunset-chasing in backupSuggestions.")
+                        .formatted(evaluation.recommendationReason())));
+        return rule.toString();
     }
 
     private String buildAgenticConstraint(ItineraryPipelineService.PipelineContext pipeline,
@@ -644,6 +633,7 @@ public class ItineraryApp {
                 1. 从上述真实物理候选池或用户的私域偏好库中，挑选 1 个核心打卡锚点与 1-2 个周边卫星点。绝对禁止凭空捏造地点！
                 2. 基于用户的 RAG 审美画像，为挑选出的地点贴上专属的氛围标签，并以极其地道的语言生成半日游路线。
                 3. 语言纯度：如果当前 lang 为 en，所有返回字段（除原生地名、parkingSearchKeyword 外）必须为纯英文。
+                4. 候选池若带 lat/lng，把同一组数字原样写入对应节点的 latitude、longitude，不要估算。
                 """
                 .replace("__VERIFIED__", verified)
                 .replace("__TASTE__", taste)
@@ -651,6 +641,9 @@ public class ItineraryApp {
     }
 
     private ItineraryPlan requestPlan(String message, String chatId, String systemMessage, LanguageEnum language) {
+        if (upstreamApiGuard != null) {
+            upstreamApiGuard.acquireLlm();
+        }
         String lang = language.getCode();
         String userMessage = (message == null ? "" : message)
                 + "\n\n[lang=" + lang + "] "

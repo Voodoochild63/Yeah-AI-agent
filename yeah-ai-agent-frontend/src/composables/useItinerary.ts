@@ -1,12 +1,22 @@
 import axios from 'axios'
 import { computed, ref } from 'vue'
-import { checkSunset, exportItineraryPdf, planItinerary, toFriendlyError } from '@/api/itinerary'
+import {
+  destroyItinerarySession,
+  exportItineraryPdf,
+  hydrateItinerarySession,
+  planItinerary,
+  refineItinerary,
+  toFriendlyError,
+} from '@/api/itinerary'
 import { rememberItinerary } from '@/composables/useItineraryHistory'
 import { usePoiLibrary } from '@/composables/usePoiLibrary'
 import { snapshotTasteProfile } from '@/composables/useTasteProfile'
-import type { ItineraryNode, ItineraryPlan, Lang, RagContext } from '@/types/itinerary'
+import type { ItineraryPlan, Lang, RagContext } from '@/types/itinerary'
+import { applySpotCandidate, canShuffleLocally, nextCandidateIndex, refreshLegsAround } from '@/utils/shuffleCandidate'
+import { withLiveNarrative } from '@/utils/bindActiveVenues'
 
 const SUBMIT_DEBOUNCE_MS = 400
+const PATCH_HIGHLIGHT_MS = 1_800
 
 function createChatId() {
   return `chat_${Date.now()}`
@@ -14,19 +24,21 @@ function createChatId() {
 
 const plan = ref<ItineraryPlan | null>(null)
 const loading = ref(false)
-/** 正在单点替换的 schedule 下标；为 null 表示没有卡片在微调 */
+/** 正在微调（替换或追加）的 schedule 下标；为 null 表示没有卡片在高亮 */
 const shufflingIndex = ref<number | null>(null)
 const exporting = ref(false)
 const error = ref('')
+const refineReason = ref('')
 const lang = ref<Lang>('zh')
 const lastQuery = ref('')
 const chatId = ref(createChatId())
 
 let lastSubmitAt = 0
 let currentAbortController: AbortController | null = null
-let localizeToken = 0
+let highlightTimer: number | undefined
 
 const hasPlan = computed(() => plan.value !== null)
+const hasSession = computed(() => Boolean(plan.value?.sessionId))
 
 function isCanceled(err: unknown): boolean {
   return axios.isCancel(err) || (err instanceof Error && err.name === 'CanceledError')
@@ -47,6 +59,32 @@ function buildRagContext(): RagContext {
   }
 }
 
+function highlightPatched(index: number | null | undefined) {
+  if (highlightTimer !== undefined) {
+    window.clearTimeout(highlightTimer)
+    highlightTimer = undefined
+  }
+  if (index == null || index < 0) {
+    shufflingIndex.value = null
+    return
+  }
+  shufflingIndex.value = index
+  highlightTimer = window.setTimeout(() => {
+    shufflingIndex.value = null
+    highlightTimer = undefined
+  }, PATCH_HIGHLIGHT_MS)
+}
+
+async function destroyCurrentSession() {
+  const sessionId = plan.value?.sessionId
+  if (!sessionId) return
+  try {
+    await destroyItinerarySession(sessionId)
+  } catch (err) {
+    console.warn('[itinerary] DELETE /api/itinerary/session failed', err)
+  }
+}
+
 export function useItinerary() {
   async function submit(message: string) {
     const trimmed = message.trim()
@@ -58,14 +96,22 @@ export function useItinerary() {
 
     const signal = beginPlanRequest()
     const controller = currentAbortController
+    lastQuery.value = trimmed
+    error.value = ''
 
-    // 每次全新规划都换独立会话，避免 ChatMemory 把上一次行程锁死
+    if (plan.value?.sessionId) {
+      await refineExisting(trimmed, signal, controller)
+      return
+    }
+
+    await planFromScratch(trimmed, signal, controller)
+  }
+
+  async function planFromScratch(trimmed: string, signal: AbortSignal, controller: AbortController | null) {
     chatId.value = createChatId()
     loading.value = true
     shufflingIndex.value = null
-    error.value = ''
-    lastQuery.value = trimmed
-    // 清掉上一份结果，防止请求失败时页面还挂着旧行程
+    refineReason.value = ''
     plan.value = null
 
     try {
@@ -104,80 +150,86 @@ export function useItinerary() {
     }
   }
 
-  /**
-   * 复用当前 chatId，只把返回结果里被替换的那一站写回本地行程。
-   * 其余节点保持页面上的原样，避免模型重写整条路线。
-   */
-  async function shuffleNode(index: number, hint = '') {
-    const current = plan.value
-    const node = current?.schedule?.[index]
-    if (!current || !node || shufflingIndex.value !== null) return
+  async function refineExisting(trimmed: string, signal: AbortSignal, controller: AbortController | null) {
+    const sessionId = plan.value?.sessionId
+    if (!sessionId) return
 
-    const signal = beginPlanRequest()
-    const controller = currentAbortController
-
-    const base =
-      lang.value === 'en'
-        ? `Keep every other stop exactly unchanged. Replace only stop ${index + 1} [${node.poiName}] with a different venue in the same area and of the same type.`
-        : `请保持当前其他行程完全不变，仅将第 ${index + 1} 站【${node.poiName}】替换为一个同区域、同类型但不同的备选地点。`
-    const message = hint.trim() ? `${base} ${hint.trim()}` : base
-
-    shufflingIndex.value = index
-    loading.value = false
-    error.value = ''
+    loading.value = true
+    refineReason.value = ''
 
     try {
-      const data = await planItinerary({
-        message,
-        chatId: chatId.value,
+      const data = await refineItinerary({
+        sessionId,
+        message: trimmed,
         lang: lang.value,
-        ragContext: buildRagContext(),
         signal,
       })
       if (controller !== currentAbortController) return
-      const replacement = pickReplacement(data?.schedule, index, node.poiName, current.schedule)
-      if (!replacement) {
-        throw new Error(
-          lang.value === 'en'
-            ? 'The model did not return a different stop for this card.'
-            : '模型没有返回一个不同的替换站点。',
-        )
+      if (!data?.plan) {
+        throw new Error('后端没有返回修改后的行程。')
       }
-      const schedule = current.schedule.slice()
-      schedule[index] = replacement
-      plan.value = { ...current, schedule }
+      plan.value = data.plan
+      refineReason.value = data.reason?.trim() || ''
+      highlightPatched(data.targetIndex)
+      rememberItinerary(data.plan, chatId.value)
     } catch (err) {
       if (isCanceled(err)) {
-        console.log('用户主动取消了规划请求')
+        console.log('用户主动取消了局部修改请求')
         return
       }
       if (controller !== currentAbortController) return
-      console.error('[itinerary] shuffle node failed', {
-        index,
-        chatId: chatId.value,
+      console.error('[itinerary] POST /api/itinerary/session/refine failed', {
+        message: trimmed,
+        sessionId,
         lang: lang.value,
         error: err,
       })
       error.value = toFriendlyError(err)
     } finally {
       if (controller === currentAbortController) {
-        shufflingIndex.value = null
+        loading.value = false
         currentAbortController = null
       }
     }
+  }
+
+  /**
+   * 预置 candidates 时在内存里轮播，不打网。没有备选时静默返回。
+   */
+  function shuffleNode(index: number, _hint = '') {
+    const current = plan.value
+    const node = current?.schedule?.[index]
+    if (!current || !node || !canShuffleLocally(node)) return
+
+    const pool = node.candidates ?? node.sunsetCandidates
+    const candidate = pool?.[nextCandidateIndex(node)]
+    if (!candidate) return
+
+    applySpotCandidate(node, candidate, lang.value)
+    refreshLegsAround(current.schedule, index, lang.value)
+    plan.value = { ...current, schedule: current.schedule.slice() }
   }
 
   function stop() {
     currentAbortController?.abort()
   }
 
-  function restorePlan(next: ItineraryPlan) {
+  async function restorePlan(next: ItineraryPlan) {
     currentAbortController?.abort()
     currentAbortController = null
     loading.value = false
     shufflingIndex.value = null
     error.value = ''
+    refineReason.value = ''
     plan.value = next
+    try {
+      const hydrated = await hydrateItinerarySession(next)
+      if (hydrated) {
+        plan.value = hydrated
+      }
+    } catch (err) {
+      console.warn('[itinerary] POST /api/itinerary/session hydrate failed', err)
+    }
   }
 
   async function exportPdf() {
@@ -186,7 +238,7 @@ export function useItinerary() {
     exporting.value = true
     error.value = ''
     try {
-      await exportItineraryPdf(plan.value, lang.value)
+      await exportItineraryPdf(withLiveNarrative(plan.value), lang.value)
     } catch (e) {
       console.error('[itinerary] POST /api/ai/itinerary/export-pdf failed', e)
       error.value = toFriendlyError(e)
@@ -198,57 +250,22 @@ export function useItinerary() {
   function reset() {
     currentAbortController?.abort()
     currentAbortController = null
+    void destroyCurrentSession()
     plan.value = null
     error.value = ''
+    refineReason.value = ''
     lastQuery.value = ''
     loading.value = false
     shufflingIndex.value = null
     chatId.value = createChatId()
   }
 
-  function pickReplacement(
-    returned: ItineraryNode[] | undefined,
-    index: number,
-    previousName: string,
-    kept: ItineraryNode[],
-  ): ItineraryNode | null {
-    if (!returned?.length) return null
-    const previous = previousName.trim().toLowerCase()
-    const occupied = new Set(
-      kept
-        .filter((_, i) => i !== index)
-        .map((item) => item.poiName?.trim().toLowerCase())
-        .filter(Boolean),
-    )
-    const sameIndex = returned[index]
-    if (sameIndex?.poiName && sameIndex.poiName.trim().toLowerCase() !== previous) {
-      return sameIndex
-    }
-    return (
-      returned.find((item) => {
-        const name = item.poiName?.trim().toLowerCase()
-        return Boolean(name) && name !== previous && !occupied.has(name)
-      }) ?? null
-    )
-  }
-
   /**
-   * 切换语言后，停车贴士和落日说明按新的 lang 重取。
-   * 标题、标签和备选建议来自上次规划，要等下一次 plan 请求才会换成目标语言。
+   * 切换语言后不再重拉落日接口，避免把规划后绑定的就近机位覆盖成市中心默认点。
    */
   async function setLang(next: Lang) {
     if (lang.value === next) return
     lang.value = next
-    const current = plan.value
-    if (!current) return
-
-    const token = ++localizeToken
-    const sunset = await checkSunset(next).catch(() => null)
-    if (token !== localizeToken || !plan.value) return
-    plan.value = {
-      ...plan.value,
-      sunsetEvaluation: sunset ?? plan.value.sunsetEvaluation,
-    }
   }
 
   return {
@@ -257,9 +274,11 @@ export function useItinerary() {
     shufflingIndex,
     exporting,
     error,
+    refineReason,
     lang,
     lastQuery,
     hasPlan,
+    hasSession,
     submit,
     stop,
     restorePlan,

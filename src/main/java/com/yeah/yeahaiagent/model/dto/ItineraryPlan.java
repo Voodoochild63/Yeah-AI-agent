@@ -58,6 +58,12 @@ public class ItineraryPlan {
      */
     private SunsetEvaluation sunsetEvaluation;
 
+    /**
+     * 多轮局部修改会话 ID。首次规划写入 Caffeine sessionCache 后返回给前端；
+     * 模型不必填写，服务端会覆盖。
+     */
+    private String sessionId;
+
     public ItineraryPlan(String title, String summary, List<ItineraryNode> schedule, List<String> backupSuggestions) {
         this.title = title;
         this.summary = summary;

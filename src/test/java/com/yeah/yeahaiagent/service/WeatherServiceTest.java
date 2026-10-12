@@ -91,7 +91,7 @@ class WeatherServiceTest {
         assertThat(first.goldenHourWindow()).isEqualTo("17:35 - 18:20");
         assertThat(first.cloudCover()).isEqualTo(40);
         assertThat(first.rainProb()).isEqualTo(10);
-        assertThat(first.recommendedSpot()).isEqualTo("Observatory Hill Park");
+        assertThat(first.recommendedSpot()).isNull();
         assertThat(second).isEqualTo(first);
         assertThat(weatherCache().getNativeCache().estimatedSize())
                 .as("同一坐标同一天只应留下一条缓存")
@@ -179,7 +179,7 @@ class WeatherServiceTest {
         assertThat(evaluation.cloudCover()).isNull();
         assertThat(evaluation.rainProb()).isNull();
         assertThat(evaluation.recommendationReason()).contains("暂时拿不到实时天气数据");
-        assertThat(evaluation.recommendedSpot()).isEqualTo("Observatory Hill Park");
+        assertThat(evaluation.recommendedSpot()).isNull();
         assertThat(evaluation.photoTip()).isNotBlank();
     }
 

@@ -23,6 +23,7 @@ const {
   shufflingIndex,
   exporting,
   error,
+  refineReason,
   lang,
   hasPlan,
   submit,
@@ -58,8 +59,8 @@ const QUICK_PROMPTS: Record<Lang, string[]> = {
 const quickPrompts = computed(() => QUICK_PROMPTS[lang.value])
 const followUpHint = computed(() =>
   lang.value === 'en'
-    ? 'Send another request to plan from scratch with the current language.'
-    : '再发一条会按新的描述重新向后端规划，不会沿用上一份行程。',
+    ? 'Say what to swap — only that card is patched. Back to start clears the session.'
+    : '直接说要改哪一站，只会替换对应卡片。点「返回上一级」才销毁会话。',
 )
 
 async function onSubmit(message: string) {
@@ -110,7 +111,7 @@ function onRestore(next: ItineraryPlan) {
       <button
         type="button"
         class="focus-ring flex items-center gap-2 rounded-full px-1 py-1 text-sm font-semibold text-gray-900 transition-opacity hover:opacity-70 dark:text-gray-50"
-        title="回到起始状态"
+        title="返回上一级"
         @click="onNewChat"
       >
         <span
@@ -157,8 +158,9 @@ function onRestore(next: ItineraryPlan) {
         "
       >
         <PromptBar
-          :loading="loading || shufflingIndex !== null"
+          :loading="loading"
           :lang="lang"
+          :has-plan="hasPlan"
           @submit="onSubmit"
           @stop="stop"
           @open-drawer="drawerOpen = true"
@@ -190,6 +192,23 @@ function onRestore(next: ItineraryPlan) {
         </div>
       </Transition>
 
+      <!-- 局部修改说明 -->
+      <Transition
+        enter-active-class="transition-all duration-300"
+        enter-from-class="opacity-0 -translate-y-2"
+        leave-active-class="transition-all duration-200"
+        leave-to-class="opacity-0"
+      >
+        <div
+          v-if="refineReason && plan && !loading"
+          role="status"
+          class="mt-6 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-sm text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-950/30 dark:text-emerald-300"
+        >
+          <AppIcon name="sparkle" class="mt-0.5 h-4 w-4 shrink-0" />
+          <span class="leading-relaxed">{{ refineReason }}</span>
+        </div>
+      </Transition>
+
       <!-- 错误提示 -->
       <Transition
         enter-active-class="transition-all duration-300"
@@ -207,8 +226,8 @@ function onRestore(next: ItineraryPlan) {
         </div>
       </Transition>
 
-      <!-- 加载骨架 -->
-      <div v-if="loading" class="mt-9">
+      <!-- 首次规划骨架；局部修改时保留时间轴 -->
+      <div v-if="loading && !plan" class="mt-9">
         <LoadingStatus :active="loading" :lang="lang" />
 
         <div class="relative">
@@ -239,8 +258,14 @@ function onRestore(next: ItineraryPlan) {
         </div>
       </div>
 
-      <!-- 状态 B：时间轴 -->
-      <div v-else-if="plan" class="mt-9">
+      <!-- 状态 B：时间轴（局部修改时仍显示，不整页骨架） -->
+      <div v-else-if="plan" class="mt-9" :class="loading ? 'pointer-events-none opacity-70' : ''">
+        <p
+          v-if="loading"
+          class="mb-4 text-xs text-gray-400 dark:text-gray-500"
+        >
+          {{ lang === 'en' ? 'Patching one stop…' : '正在替换对应行程卡片…' }}
+        </p>
         <ItineraryTimeline
           :plan="plan"
           :lang="lang"

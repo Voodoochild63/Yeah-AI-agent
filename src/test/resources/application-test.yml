@@ -1,0 +1,24 @@
+# CI / 单测专用：dummy key，不打真实 LLM、Serper、Open-Meteo。
+spring:
+  threads:
+    virtual:
+      enabled: true
+  ai:
+    openai:
+      api-key: ${SPRING_AI_OPENAI_API_KEY:ci-dummy-openai-key}
+      base-url: ${SPRING_AI_OPENAI_BASE_URL:https://example.invalid/v1}
+      chat:
+        options:
+          model: ci-dummy-model
+    mcp:
+      client:
+        enabled: false
+serper:
+  api-key: ${SERPER_API_KEY:}
+search-api:
+  api-key: ${SEARCH_API_API_KEY:ci-dummy-search-key}
+logging:
+  level:
+    root: INFO
+    org.springframework.ai: WARN
+    com.yeah.yeahaiagent: INFO

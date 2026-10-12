@@ -165,7 +165,7 @@ onBeforeUnmount(() => {
             </span>
           </button>
 
-          <!-- 新会话 -->
+          <!-- 返回上一级：销毁多轮会话，回到起始规划 -->
           <button
             type="button"
             class="focus-ring group flex w-full items-start gap-3 rounded-xl px-2.5 py-2.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-800/70"
@@ -177,9 +177,15 @@ onBeforeUnmount(() => {
               <AppIcon name="chat" class="h-4 w-4" />
             </span>
             <span class="min-w-0 flex-1">
-              <span class="block text-sm font-medium text-gray-800 dark:text-gray-100">开启新会话</span>
+              <span class="block text-sm font-medium text-gray-800 dark:text-gray-100">{{
+                isEn ? 'Back to start' : '返回上一级'
+              }}</span>
               <span class="block text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                换一个 chatId，清空多轮上下文
+                {{
+                  isEn
+                    ? 'Clear this itinerary session and start a new plan'
+                    : '销毁当前行程会话，回到起始规划'
+                }}
               </span>
             </span>
           </button>

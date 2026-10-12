@@ -7,10 +7,15 @@ import com.yeah.yeahaiagent.model.dto.CustomPoiDto;
 import com.yeah.yeahaiagent.model.dto.RagContext;
 import com.yeah.yeahaiagent.model.dto.RealPlaceDto;
 import com.yeah.yeahaiagent.model.dto.TasteProfile;
+import com.yeah.yeahaiagent.model.enums.SpotCategory;
+import com.yeah.yeahaiagent.resilience.UpstreamApiGuard;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,15 +31,25 @@ public class ItineraryPipelineService {
     private final ChatClient chatClient;
     private final SerperPlacesService serperPlacesService;
     private final ObjectMapper objectMapper;
+    private final UpstreamApiGuard upstreamApiGuard;
 
     public ItineraryPipelineService(ChatModel dashscopeChatModel,
                                     SerperPlacesService serperPlacesService,
                                     ObjectMapper objectMapper) {
+        this(dashscopeChatModel, serperPlacesService, objectMapper, null);
+    }
+
+    @Autowired
+    public ItineraryPipelineService(ChatModel dashscopeChatModel,
+                                    SerperPlacesService serperPlacesService,
+                                    ObjectMapper objectMapper,
+                                    ObjectProvider<UpstreamApiGuard> upstreamApiGuard) {
         this.chatClient = ChatClient.builder(dashscopeChatModel)
                 .defaultTemplateRenderer((template, variables) -> template)
                 .build();
         this.serperPlacesService = serperPlacesService;
         this.objectMapper = objectMapper;
+        this.upstreamApiGuard = upstreamApiGuard == null ? null : upstreamApiGuard.getIfAvailable();
     }
 
     public record PipelineContext(List<String> searchQueries, List<RealPlaceDto> verifiedPlaces) {
@@ -67,8 +82,17 @@ public class ItineraryPipelineService {
                     .append(" reviews) | ")
                     .append(nullToEmpty(place.getCategory()))
                     .append(" | ")
-                    .append(nullToEmpty(place.getAddress()))
-                    .append('\n');
+                    .append(nullToEmpty(place.getAddress()));
+            if (place.getLatitude() != null && place.getLongitude() != null) {
+                builder.append(" | lat ").append(place.getLatitude())
+                        .append(" lng ").append(place.getLongitude());
+            }
+            if (place.getOpeningHours() != null && !place.getOpeningHours().isEmpty()) {
+                builder.append(" | hours ").append(String.join("; ", place.getOpeningHours()));
+            } else if (place.getOpeningHoursText() != null && !place.getOpeningHoursText().isBlank()) {
+                builder.append(" | hours ").append(place.getOpeningHoursText());
+            }
+            builder.append('\n');
         }
         return builder.toString().trim();
     }
@@ -126,19 +150,26 @@ public class ItineraryPipelineService {
                 .replace("__PACE__", describePace(taste == null ? null : taste.getPace()))
                 .replace("__NOTES__", blankToDash(taste == null ? null : taste.getCustomNotes()));
         try {
+            if (upstreamApiGuard != null) {
+                upstreamApiGuard.acquireLlm();
+            }
             String raw = chatClient.prompt()
                     .templateRenderer((template, variables) -> template)
                     .system("""
                             You write short English Google Maps search queries for Sydney venues.
                             Output JSON only.
+                            If the user wants a walk, stroll, sea breeze, park or exhibition, queries MUST be parks, coastal walks, lookouts or galleries — never restaurants.
+                            If the request is a full-day / 一日游, include a sunset lookout query and a dinner query.
                             """)
                     .user(userBlock)
                     .call()
                     .content();
             List<String> parsed = parseQueries(raw);
             if (!parsed.isEmpty()) {
-                return parsed.stream().limit(2).toList();
+                return parsed.stream().limit(ItineraryDayScope.isFullDay(query) ? 4 : 2).toList();
             }
+        } catch (ResponseStatusException ex) {
+            throw ex;
         } catch (RuntimeException ex) {
             log.warn("search-query LLM call failed, using fallback", ex);
         }
@@ -191,11 +222,19 @@ public class ItineraryPipelineService {
                 || query.contains("展") || query.contains("美术"))) {
             queries.add("art gallery Chippendale Sydney");
         }
+        if (query != null && SpotCategory.looksLikeWalk(query.toLowerCase(Locale.ROOT))) {
+            queries.add("scenic coastal walk Sydney harbour");
+            queries.add("Barangaroo Reserve night walk");
+        }
+        if (ItineraryDayScope.isFullDay(query)) {
+            queries.add("sunset lookout Sydney harbour");
+            queries.add("Japanese restaurant Sydney dinner");
+        }
         if (queries.isEmpty()) {
             queries.add("specialty coffee Sydney");
             queries.add("independent cafe Sydney");
         }
-        return queries.stream().limit(2).toList();
+        return queries.stream().limit(ItineraryDayScope.isFullDay(query) ? 4 : 2).toList();
     }
 
     private static String nullToEmpty(String value) {

@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
+import OpeningHoursStatus from '@/components/OpeningHoursStatus.vue'
 import ParkingBlock from '@/components/ParkingBlock.vue'
 import type { ItineraryNode, Lang } from '@/types/itinerary'
 import { localizeDuration, pickLocalized } from '@/utils/localeText'
 import { getGoogleMapsUrl } from '@/utils/maps'
+import { isAlcoholStop as detectAlcohol } from '@/utils/transitMode'
 
 const props = withDefaults(
   defineProps<{
     node: ItineraryNode
     lang?: Lang
     shuffling?: boolean
+    showParking?: boolean | null
   }>(),
   { lang: 'zh', shuffling: false },
 )
@@ -19,16 +22,25 @@ const emit = defineEmits<{
   shuffle: [hint: string]
 }>()
 
-const confirmOpen = ref(false)
-const hint = ref('')
-const popoverStyle = ref({ top: '0px', right: '0px' })
-
-const showParking = computed(
-  () => props.node.parkingInfo?.hasParkingRecommendation !== false && Boolean(props.node.poiName?.trim()),
+const isEn = computed(() => props.lang === 'en')
+const parkingVisible = computed(() => {
+  if (!props.node.poiName?.trim()) return false
+  if (detectAlcohol(props.node)) return false
+  if (props.showParking === true) return true
+  if (props.showParking === false) return false
+  return props.node.parkingInfo?.hasParkingRecommendation !== false
+})
+const isAlcoholStop = computed(() => detectAlcohol(props.node))
+const alcoholWarning = computed(() =>
+  props.node.safetyWarning?.trim()
+    || (isAlcoholStop.value
+      ? isEn.value
+        ? '🍷 Alcohol involved — use walking, public transport or Uber. Never drink and drive.'
+        : '🍷 涉及饮酒，请使用公共交通或网约车出行，切勿酒驾'
+      : ''),
 )
 const poiMapsUrl = computed(() => getGoogleMapsUrl(props.node.poiName))
 const canOpenPoiMap = computed(() => Boolean(props.node.poiName?.trim()) && poiMapsUrl.value !== '#')
-const isEn = computed(() => props.lang === 'en')
 const untitledPoi = computed(() => (isEn.value ? 'Untitled place' : '未命名地点'))
 const stayLabel = computed(() => localizeDuration(props.node.stayDuration, props.lang ?? 'zh'))
 const categoryLabel = computed(() =>
@@ -42,15 +54,28 @@ const websiteHref = computed(() => {
   return url && /^https?:\/\//i.test(url) ? url : ''
 })
 const shuffleLabel = computed(() => (isEn.value ? 'Shuffle' : '换一个'))
-const shuffleTitle = computed(() =>
-  isEn.value ? 'Replace only this stop' : '只替换这一站，其余行程保持不变',
-)
+const shufflePool = computed(() => props.node.candidates ?? props.node.sunsetCandidates ?? [])
+const canShuffle = computed(() => shufflePool.value.length >= 2)
+const currentCandidate = computed(() => {
+  const name = props.node.poiName?.trim().toLowerCase()
+  return shufflePool.value.find((item) => item.name?.trim().toLowerCase() === name)
+})
+const ratingLabel = computed(() => {
+  const rating = currentCandidate.value?.rating
+  if (rating == null) return ''
+  const count = currentCandidate.value?.ratingCount
+  return count ? `${rating.toFixed(1)} (${count})` : rating.toFixed(1)
+})
+const shuffleTitle = computed(() => {
+  if (!canShuffle.value) {
+    return isEn.value ? 'No other venues were prefetched for this stop' : '这一站还没有预置备选'
+  }
+  return isEn.value ? 'Switch to the next prefetched venue' : '切换到下一个预置地点，无需等待'
+})
 
-function confirmShuffle() {
-  if (props.shuffling) return
-  emit('shuffle', hint.value)
-  confirmOpen.value = false
-  hint.value = ''
+function onShuffle() {
+  if (!canShuffle.value) return
+  emit('shuffle', '')
 }
 
 function getRedNoteLink(node: ItineraryNode) {
@@ -64,21 +89,12 @@ function getRedditLink(node: ItineraryNode) {
   const q = node.redditKeyword?.trim() || node.poiName?.trim() || 'Sydney'
   return `https://www.reddit.com/r/sydney/search/?q=${encodeURIComponent(q)}&restrict_sr=1`
 }
-
-function toggleConfirm(event: MouseEvent) {
-  if (props.shuffling) return
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-  popoverStyle.value = {
-    top: `${rect.bottom + 8}px`,
-    right: `${Math.max(12, window.innerWidth - rect.right)}px`,
-  }
-  confirmOpen.value = !confirmOpen.value
-}
 </script>
 
 <template>
   <article
     class="relative mb-6 rounded-xl border border-gray-100 bg-white/80 p-4 shadow-sm backdrop-blur transition-all duration-300 hover:-translate-y-0.5 hover:border-gray-200 hover:shadow-md dark:border-gray-700/50 dark:bg-gray-800/50 dark:shadow-none dark:hover:border-gray-600/70 dark:hover:bg-gray-800/70"
+    :class="shuffling ? 'ring-2 ring-emerald-400/80 dark:ring-emerald-400/50' : ''"
   >
     <!-- Header：到达时间 + 店名 + 单点替换 -->
     <header class="flex items-start justify-between gap-3">
@@ -87,7 +103,7 @@ function toggleConfirm(event: MouseEvent) {
         v-if="node.arrivalTime"
         class="rounded-md bg-blue-50 px-2 py-0.5 font-mono text-sm font-semibold tabular-nums text-blue-700 dark:bg-blue-500/15 dark:text-blue-300"
       >
-        {{ node.arrivalTime }}
+        {{ node.estimatedArrival || node.arrivalTime }}
       </span>
       <h3 class="text-base leading-snug font-semibold text-gray-900 dark:text-gray-50">
         <a
@@ -109,56 +125,34 @@ function toggleConfirm(event: MouseEvent) {
         <button
           type="button"
           :title="shuffleTitle"
-          :disabled="shuffling"
-          class="focus-ring inline-flex cursor-pointer items-center gap-1 rounded-full border border-gray-200/80 bg-white/70 px-2 py-1 text-[0.7rem] font-medium text-gray-500 transition-colors hover:border-gray-300 hover:bg-black/5 hover:text-gray-800 disabled:cursor-wait disabled:opacity-60 dark:border-gray-600/70 dark:bg-gray-900/40 dark:text-gray-400 dark:hover:bg-white/10 dark:hover:text-gray-100"
-          @click="toggleConfirm"
+          :disabled="!canShuffle"
+          class="focus-ring inline-flex cursor-pointer items-center gap-1 rounded-full border border-gray-200/80 bg-white/70 px-2 py-1 text-[0.7rem] font-medium text-gray-500 transition-colors hover:border-gray-300 hover:bg-black/5 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600/70 dark:bg-gray-900/40 dark:text-gray-400 dark:hover:bg-white/10 dark:hover:text-gray-100"
+          @click="onShuffle"
         >
-          <span aria-hidden="true" :class="shuffling ? 'inline-block animate-spin' : ''">↻</span>
+          <span aria-hidden="true">↻</span>
           {{ shuffleLabel }}
         </button>
-
-        <Teleport to="body">
-        <div
-          v-if="confirmOpen && !shuffling"
-          class="fixed z-50 w-64 rounded-2xl border border-gray-200/80 bg-white/95 p-3 shadow-xl backdrop-blur-xl dark:border-gray-700/70 dark:bg-gray-900/95"
-          :style="popoverStyle"
-        >
-          <p class="text-xs leading-relaxed text-gray-600 dark:text-gray-300">
-            {{ shuffleTitle }}
-          </p>
-          <input
-            v-model="hint"
-            type="text"
-            :placeholder="isEn ? 'Optional: prefer indoor' : '可选：想换成室内的'"
-            class="focus-ring mt-2 w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-800 placeholder-gray-400 dark:border-gray-700 dark:bg-gray-800/70 dark:text-gray-100 dark:placeholder-gray-500"
-            @keydown.enter.prevent="confirmShuffle"
-          />
-          <div class="mt-2 flex justify-end gap-2">
-            <button
-              type="button"
-              class="rounded-full px-2.5 py-1 text-xs text-gray-500 hover:bg-black/5 dark:text-gray-400 dark:hover:bg-white/10"
-              @click="confirmOpen = false"
-            >
-              {{ isEn ? 'Cancel' : '取消' }}
-            </button>
-            <button
-              type="button"
-              class="rounded-full bg-gray-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-gray-700 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-200"
-              @click="confirmShuffle"
-            >
-              {{ isEn ? 'Replace' : '确认替换' }}
-            </button>
-          </div>
-        </div>
-        </Teleport>
       </div>
     </header>
+
+    <OpeningHoursStatus
+      :node="node"
+      :lang="lang"
+      :shuffling="shuffling"
+      @shuffle="emit('shuffle', $event)"
+    />
 
     <!-- 徽章：类别 + 建议停留 -->
     <div class="mt-2.5 flex flex-wrap items-center gap-2">
       <span v-if="categoryLabel" class="tag-chip bg-gray-100 text-gray-600 dark:bg-gray-700/60 dark:text-gray-300">
         <AppIcon name="tag" class="h-3 w-3" />
         {{ categoryLabel }}
+      </span>
+      <span
+        v-if="ratingLabel"
+        class="tag-chip bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200"
+      >
+        ★ {{ ratingLabel }}
       </span>
       <span
         v-if="node.stayDuration"
@@ -169,8 +163,15 @@ function toggleConfirm(event: MouseEvent) {
       </span>
     </div>
 
+    <p
+      v-if="isAlcoholStop"
+      class="mt-3 rounded-lg border border-rose-200/80 bg-rose-50/80 px-3 py-2 text-xs font-medium leading-relaxed text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
+    >
+      {{ alcoholWarning || (isEn ? '🍷 Alcohol involved — walk, public transport or Uber. Never drink and drive.' : '🍷 涉及饮酒，请使用公共交通或网约车出行，切勿酒驾') }}
+    </p>
+
     <!-- 停车推荐 -->
-    <ParkingBlock v-if="showParking" :node="node" :lang="lang" />
+    <ParkingBlock v-if="parkingVisible && !isAlcoholStop" :node="node" :lang="lang" />
 
     <div class="mt-3 flex flex-wrap items-center gap-2 border-t border-black/5 pt-2.5 dark:border-white/5">
       <span class="select-none text-xs font-medium text-zinc-400 dark:text-zinc-500">
@@ -207,20 +208,6 @@ function toggleConfirm(event: MouseEvent) {
         <span class="text-[11px]" aria-hidden="true">💬</span>
         <span>Reddit</span>
       </a>
-    </div>
-
-    <div
-      v-if="shuffling"
-      class="absolute inset-0 z-10 overflow-hidden rounded-xl bg-white/75 backdrop-blur-[2px] dark:bg-gray-950/70"
-    >
-      <div class="animate-pulse p-4">
-        <div class="flex gap-2.5">
-          <div class="h-5 w-12 rounded-md bg-gray-200 dark:bg-gray-700" />
-          <div class="h-5 w-36 rounded-md bg-gray-200 dark:bg-gray-700" />
-        </div>
-        <div class="mt-3 h-4 w-24 rounded-full bg-gray-100 dark:bg-gray-800" />
-        <div class="mt-3 h-14 rounded-lg bg-gray-100 dark:bg-gray-800" />
-      </div>
     </div>
   </article>
 </template>

@@ -22,12 +22,7 @@ import java.util.List;
 public class WeatherService {
 
     /**
-     * 悉尼天文台山公园，视野开阔且可同时收进海港大桥
-     */
-    private static final String SUNSET_SPOT = "Observatory Hill Park";
-
-    /**
-     * 悉尼市中心坐标
+     * 悉尼市中心坐标（只用来拉全市天气，不代表落日机位）
      */
     private static final double LATITUDE = -33.8688;
     private static final double LONGITUDE = 151.2093;
@@ -103,10 +98,10 @@ public class WeatherService {
                     rainProb,
                     language.text("今日多云微晴，晚霞概率高",
                             "Partly cloudy today, high chance of sunset colour"),
-                    SUNSET_SPOT,
+                    null,
                     language.text(
-                            "建议提前 20 分钟到场，用海港大桥作前景压住画面右侧，日落后再等 10 分钟拍蓝调时刻。",
-                            "Arrive 20 minutes early. Use the Harbour Bridge as a foreground on the right, then wait 10 minutes after sunset for blue hour.")
+                            "若行程会排到傍晚，在当天最后一站附近找朝西的海边或高点即可，不要跨区赶路。",
+                            "If the day runs into evening, pick a west-facing headland or high point near the last stop. Do not cross town.")
             );
         }
         return new SunsetEvaluation(
@@ -116,7 +111,7 @@ public class WeatherService {
                 cloudCover,
                 rainProb,
                 buildGentleReason(cloudCover, rainProb, language),
-                SUNSET_SPOT,
+                null,
                 buildGentlePhotoTip(cloudCover, rainProb, language)
         );
     }
@@ -193,10 +188,10 @@ public class WeatherService {
                 language.text(
                         "暂时拿不到实时天气数据，建议出发前再确认当日云量与降水情况",
                         "Live weather is unavailable. Recheck cloud cover and rain before you head out."),
-                SUNSET_SPOT,
+                null,
                 language.text(
-                        "若临时决定前往，可留出日落前后各半小时的弹性时间。",
-                        "If you still go, keep a 30-minute buffer before and after sunset.")
+                        "若行程会排到傍晚，再按当天最后一站就近选朝西的高点或海边。",
+                        "If the day runs into evening, pick a west-facing high point or shoreline near the last stop.")
         );
     }
 }

@@ -4,10 +4,13 @@ import AppIcon from '@/components/AppIcon.vue'
 import SunsetCard from '@/components/SunsetCard.vue'
 import TimelineNodeCard from '@/components/TimelineNodeCard.vue'
 import TransitBadge from '@/components/TransitBadge.vue'
-import type { ItineraryPlan, Lang } from '@/types/itinerary'
+import TransitModeSelector from '@/components/TransitModeSelector.vue'
+import type { ItineraryPlan, Lang, TravelMode } from '@/types/itinerary'
+import { applyTravelMode, parkingVisible, drivingForbiddenOn, isAlcoholStop } from '@/utils/transitMode'
 import { getGoogleMapsDirectionsUrl } from '@/utils/maps'
 import { formatItineraryPlainText } from '@/utils/itineraryText'
 import { pickLocalized, pickLocalizedList } from '@/utils/localeText'
+import { bindActiveVenues, bindSunset } from '@/utils/bindActiveVenues'
 
 const props = withDefaults(
   defineProps<{
@@ -29,7 +32,7 @@ const suggestions = computed(() =>
     props.plan.backupSuggestionsZh,
     props.plan.backupSuggestionsEn,
     props.plan.backupSuggestions,
-  ),
+  ).map((item) => bindActiveVenues(item, schedule.value)),
 )
 const isEn = computed(() => props.lang === 'en')
 
@@ -37,10 +40,12 @@ const isEn = computed(() => props.lang === 'en')
 const TIMELINE_INSET = 'ml-6'
 
 const fallbackTitle = computed(() => (isEn.value ? 'Your Sydney itinerary' : '你的悉尼行程'))
-const displayTitle = computed(
-  () =>
+const displayTitle = computed(() =>
+  bindActiveVenues(
     pickLocalized(props.lang ?? 'zh', props.plan.titleZh, props.plan.titleEn, props.plan.title) ||
-    fallbackTitle.value,
+      fallbackTitle.value,
+    schedule.value,
+  ),
 )
 const emptySchedule = computed(() =>
   isEn.value
@@ -50,6 +55,20 @@ const emptySchedule = computed(() =>
 function isTerminalTransit(text: string) {
   return /^(行程结束|本日结束|终点|end of itinerary|end of the day|the end)$/i.test(text.trim())
 }
+
+function hasConnector(node: (typeof schedule.value)[number]) {
+  if (node.transitOptions) return true
+  return Boolean(node.transitToNext && !isTerminalTransit(node.transitToNext))
+}
+
+function onSelectMode(index: number, mode: TravelMode) {
+  const node = schedule.value[index]
+  const next = schedule.value[index + 1]
+  if (mode === 'DRIVING' && (drivingForbiddenOn(node) || isAlcoholStop(next))) {
+    return
+  }
+  applyTravelMode(schedule.value, index, mode, props.lang ?? 'zh')
+}
 const backupHeading = computed(() =>
   isEn.value ? 'Backup ideas & travel notes' : '灵感备选与出行须知',
 )
@@ -58,16 +77,23 @@ const routeUrl = computed(() =>
 )
 const routeLabel = computed(() => (isEn.value ? 'Open Route in Google Maps' : '在地图中查看完整路线'))
 const detailedDescription = computed(() =>
-  pickLocalized(
-    props.lang ?? 'zh',
-    props.plan.detailedDescriptionZh,
-    props.plan.detailedDescriptionEn,
-    props.plan.detailedDescription || props.plan.overview,
+  bindActiveVenues(
+    pickLocalized(
+      props.lang ?? 'zh',
+      props.plan.detailedDescriptionZh,
+      props.plan.detailedDescriptionEn,
+      props.plan.detailedDescription || props.plan.overview,
+    ),
+    schedule.value,
   ),
 )
 const displaySummary = computed(() =>
-  pickLocalized(props.lang ?? 'zh', props.plan.summaryZh, props.plan.summaryEn, props.plan.summary),
+  bindActiveVenues(
+    pickLocalized(props.lang ?? 'zh', props.plan.summaryZh, props.plan.summaryEn, props.plan.summary),
+    schedule.value,
+  ),
 )
+const displaySunset = computed(() => bindSunset(props.plan.sunsetEvaluation, schedule.value))
 const copyLabel = computed(() => (isEn.value ? '📋 Copy' : '📋 复制行程'))
 const toast = ref('')
 let toastTimer: number | undefined
@@ -196,17 +222,26 @@ onBeforeUnmount(() => {
           :node="node"
           :lang="lang"
           :shuffling="shufflingIndex === index"
+          :show-parking="parkingVisible(schedule, index)"
           :class="TIMELINE_INSET"
           @shuffle="emit('shuffle', index, $event)"
         />
 
         <!-- 通勤衔接：与白色主卡片同一左边距，左边缘对齐 -->
         <div
-          v-if="node.transitToNext && !isTerminalTransit(node.transitToNext)"
+          v-if="hasConnector(node)"
           class="relative z-10 -mt-3 mb-3 flex"
           :class="TIMELINE_INSET"
         >
-          <TransitBadge :text="node.transitToNext" :lang="lang" />
+          <TransitModeSelector
+            v-if="node.transitOptions"
+            :selected-mode="node.selectedMode"
+            :transit-options="node.transitOptions"
+            :lang="lang"
+            :driving-forbidden="Boolean(drivingForbiddenOn(node) || isAlcoholStop(schedule[index + 1]))"
+            @select="onSelectMode(index, $event)"
+          />
+          <TransitBadge v-else :text="node.transitToNext" :lang="lang" />
         </div>
       </div>
 
@@ -225,7 +260,7 @@ onBeforeUnmount(() => {
     </p>
 
     <!-- 落日高亮卡 -->
-    <SunsetCard v-if="plan.sunsetEvaluation" :sunset="plan.sunsetEvaluation" :lang="lang" class="mt-6" />
+    <SunsetCard v-if="displaySunset" :sunset="displaySunset" :lang="lang" class="mt-6" />
 
     <!-- 备选建议 -->
     <section

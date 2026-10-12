@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ItineraryPlan, Lang, ParkingInfo, RagContext, SunsetEvaluation } from '@/types/itinerary'
+import type { ItineraryPlan, ItineraryRefineResponse, Lang, RagContext, SunsetEvaluation } from '@/types/itinerary'
 
 const http = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? '/api',
@@ -31,12 +31,30 @@ export async function planItinerary(params: {
   return data
 }
 
-/** GET /api/ai/places/parking-check。lat/lng 传 0，让服务端按店名匹配并按 lang 返回贴士。 */
-export async function fetchParking(poiName: string, lang: Lang): Promise<ParkingInfo> {
-  const { data } = await http.get<ParkingInfo>('/ai/places/parking-check', {
-    params: { lat: 0, lng: 0, poiName, lang },
-  })
+/** POST /api/itinerary/session/{sessionId}/refine —— REPLACE 一张卡片或 APPEND 新站 */
+export async function refineItinerary(params: {
+  sessionId: string
+  message: string
+  lang: Lang
+  signal?: AbortSignal
+}): Promise<ItineraryRefineResponse> {
+  const { data } = await http.post<ItineraryRefineResponse>(
+    `/itinerary/session/${encodeURIComponent(params.sessionId)}/refine`,
+    { message: params.message, lang: params.lang },
+    { signal: params.signal, timeout: 120_000 },
+  )
   return data
+}
+
+/** POST /api/itinerary/session —— 历史回放时重新写入 sessionCache */
+export async function hydrateItinerarySession(plan: ItineraryPlan): Promise<ItineraryPlan> {
+  const { data } = await http.post<ItineraryPlan>('/itinerary/session', plan)
+  return data
+}
+
+/** DELETE /api/itinerary/session/{sessionId} —— 返回上一级时销毁会话 */
+export async function destroyItinerarySession(sessionId: string): Promise<void> {
+  await http.delete(`/itinerary/session/${encodeURIComponent(sessionId)}`)
 }
 
 /** GET /api/ai/weather/sunset-check */

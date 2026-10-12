@@ -1,73 +1,64 @@
-# Yeah AI Agent · Resume Copy
+# Yeah AI Agent · 简历项目描述
 
-面向求职投递的可粘贴语段。口径按当前代码真实能力来写：私域检索是内存加权匹配（非向量库），停车默认本地适配器并可切换 Google Places，天气走 Open-Meteo 规则引擎。面试时宁可讲清取舍，不要把降级方案说成向量 RAG。
+面向投递的可粘贴文案。口径对齐当前代码：LLM 只写行程文案与排序；地点、距离、通勤、营业时间、落日与停车由 Java 后处理覆盖，避免把降级方案说成向量 RAG 或「已接 Google 停车 API」。
 
 ---
 
 ## 项目标题（简历一行）
 
-**Yeah AI Agent** — Sydney lifestyle itinerary assistant (Spring Boot / Spring AI)
+**Yeah AI Agent**｜悉尼生活方式行程智能体（Spring Boot 3 / Spring AI / Vue 3）
 
 ---
 
-## 一句话简介（Summary 栏）
+## 一句话简介（Summary / 项目概述）
 
-Built a Spring Boot 3 / Spring AI itinerary agent that turns natural-language travel intent into a typed day plan, grounding the LLM with private POI retrieval, live sunset rules, and parking hints, then exporting a bilingual, zero-LLM-cost PDF.
+基于 Spring Boot 3 与 Spring AI 实现的悉尼一日游规划智能体：把自然语言偏好转成强类型时间轴，用真实 Google Maps 高分店约束生成空间，再由服务端补齐通勤、营业时间防撞与落日决策，并支持中英双语界面与零二次计费的 PDF 导出。
 
-用中文简历可改写为：
-
-基于 Spring Boot 3 与 Spring AI 实现悉尼城市行程智能体：将自然语言偏好转为强类型一日行程，融合私域打卡检索、实时落日决策与停车建议，并支持中英双语、不重复调用大模型的 PDF 导出。
+English: Built a Spring Boot 3 / Spring AI itinerary agent that turns natural-language taste into a typed Sydney day plan, grounds the model on real Google Maps venues, then lets Java own commute, opening-hours collision, and sunset rules, with a bilingual Vue 3 UI and zero-LLM-cost PDF export.
 
 ---
 
-## 英文简历 Bullets（推荐直接粘贴）
+## 中文简历 Bullets（推荐直接粘贴 4～5 条）
 
-面试官更认「约束模型 + 服务端权威数据 + 可降级」而不是「接了个 ChatGPT」。下面四条按这个标准写，每条都有可追问的设计点。
-
-- Designed a Spring AI orchestration pipeline that injects private POI candidates and a deterministic sunset decision into the system prompt, then deserializes the model response into a typed `ItineraryPlan` via schema-constrained structured output (`BeanOutputConverter`) instead of brittle free-text parsing.
-- Separated data ownership: the LLM authors the timeline, while weather metadata and parking recommendations are computed server-side and attached after generation, preventing hallucinated forecast numbers and keeping `/plan` available when Open-Meteo or Places is down.
-- Implemented a zero-cost parking adapter over real Sydney garages (Wilson / Secure) with haversine walking estimates, plus a Google Places API (New) path behind `parking.provider`, falling back to the local adapter when the API key is missing or the call fails.
-- Built an on-demand iText 9 export that never re-calls the LLM: bilingual (zh/en) layout, CJK/Latin font fallback, parking and transit cards with explicit contrast colors, and `keepWithNext` pagination so section titles are not orphaned across pages.
-
-可选第五条（有智能体经历时再加，避免简历全是同一套 Agent 话术）：
-
-- Implemented a ReAct tool-calling agent (`BaseAgent` → `ToolCallAgent`) with a step cap, manual `ToolCallingManager`, and SSE streaming, used for open-ended tool use while keeping the itinerary path on a cheaper single-round structured call.
+- 基于 **Java 21 + Spring Boot 3.4 + Spring AI 1.0** 搭建 Retrieve-Read-Filter-Reason 编排链路：先让模型生成英文检索词，再经 Serper Maps 抓取真实店铺并做 **评分 ≥ 4.0 / 评价 ≥ 20** 硬过滤，最后以 JSON Schema 结构化输出反序列化为 `ItineraryPlan`，避免手写解析与虚构店名。
+- **划分数据主权**：时间轴与氛围文案由 LLM 生成；经纬度、Haversine 路网距离、步行/驾车/公交三种通勤预估、营业时间防撞、停车 Maps 深链与 Open-Meteo 落日评估均由服务端后处理回填，抑制天气数值与车库名幻觉。
+- 实现行程时空后处理：用真实坐标计算相邻站距离（路网系数 1.25），动态换算三种出行时长；按到达时刻比对当日营业时间，标记 `OPEN / CLOSING_SOON / CLOSED`，闭店节点可一键局部替换而不推翻整条路线。
+- 前端 **Vue 3 + TypeScript + Tailwind** 承接强类型时间轴：多模式通勤胶囊、营业状态胶囊、中英切换、单点 Shuffle 与请求取消；停车只生成 `parking near {店名} {街区}` 的 Google Maps 检索链，不编造商业车库实体。
+- 按需 **iText 9 PDF 导出**不重复调用大模型：中英双语排版与 CJK/Latin 字体回退；气象路径用 Caffeine 缓存（30 分钟）降低 Open-Meteo 重复请求。旁路保留 ReAct Tool Calling 智能体，与主规划的单轮结构化调用隔离。
 
 ---
 
-## 中文简历 Bullets（推荐直接粘贴）
+## 英文简历 Bullets（投英文岗可替换）
 
-- 基于 Spring Boot 3.4 + Spring AI 1.0 搭建行程编排链路：私域 POI 检索与落日规则在 Prompt 装配阶段注入，使用 JSON Schema 约束的结构化输出将模型结果直接反序列化为 `ItineraryPlan`，避免手写 JSON 解析。
-- 划分数据主权：行程时间轴由模型生成，气象评估与停车建议由服务端计算后回填；Open-Meteo / Places 异常时降级兜底，规划主链路不中断，同时抑制天气数值幻觉。
-- 实现零成本停车适配器（悉尼核心商圈真实车库 + 步行距离估算），并以配置开关预留 Google Places API (New)；未配置 Key 或调用失败自动回退本地数据。
-- 按需 PDF 导出（iText 9）不重复调用大模型：中英双语排版、PingFang / Helvetica 字重分离、停车与通勤卡片强制深色对比度，并用 `keepWithNext` 避免小节标题孤页。
+- Designed a Retrieve-Read-Filter-Reason Spring AI pipeline: LLM writes English Maps queries, Serper `/maps` returns real venues filtered at rating ≥ 4.0 and ≥ 20 reviews, then schema-constrained structured output deserializes into a typed `ItineraryPlan` instead of brittle free-text parsing.
+- Separated data ownership: the model authors the bilingual timeline, while Java post-processing attaches Haversine + road-factor commute estimates (walk / drive / transit), opening-hours collision (`OPEN` / `CLOSING_SOON` / `CLOSED`), Maps parking deep links, and an Open-Meteo sunset rule engine with Caffeine caching.
+- Built a Vue 3 itinerary UI that binds typed transit capsules and hours status, supports zh/en, per-stop shuffle without rewriting the rest of the route, and never invents garage entities—parking is a `parking near {venue} {suburb}` Google Maps search intent.
+- Shipped on-demand iText 9 PDF export with no second LLM call (CJK/Latin font fallback, bilingual layout). Kept a ReAct tool-calling agent on a side path so open-ended tool use does not inflate the cost of the main `/plan` flow.
 
 ---
 
-## 技术栈（Skills 旁注，一行即可）
+## 技术栈（Skills 一行）
 
-Java 21 · Spring Boot 3.4 · Spring AI · Gemini (OpenAI-compatible) · RestClient · Open-Meteo · iText 9 · Knife4j / springdoc · SSE
-
-不要把「PgVector / Embedding」写进已上线能力；代码里相关配置是注释掉的降级路径，被追问时可以讲「Gemini 兼容端点不支持 embedding，因此改为标签加权检索，向量方案可回切」。
+Java 21 · Spring Boot 3.4 · Spring AI · Gemini（OpenAI 兼容） · Vue 3 / Vite / TypeScript / Tailwind · Serper Maps · Open-Meteo · Caffeine · iText 9 · RestClient
 
 ---
 
 ## 30 秒口述（面试开场）
 
-I built a city itinerary agent, not a chatbot wrapper. The product problem is that a raw LLM plan looks fluent but invents venues and ignores today’s weather. I retrieve a private POI pool, run a sunset rule engine on Open-Meteo, and inject mutually exclusive prompt rules so the model either pins a golden-hour stop or writes a backup note. Structured output gives the frontend a typed timeline; parking and weather are attached by the server. PDF export is a separate on-demand API so we don’t pay for a second generation. Default parking is local and free; Google Places is behind a config flag with fallback.
+我做的不是 ChatGPT 套壳，而是一个「模型写体验、Java 写事实」的行程产品。通用大模型排一日游看起来流畅，但会编店名、忽略当天天气和打烊时间。我先用检索词 + Serper 把候选收敛到真实高分店，再用结构化输出拿到时间轴；距离、通勤、营业时间、落日和停车全部服务端计算后挂上去。前端是 Vue 3 强类型时间轴，导出 PDF 不再打一次模型。私域打卡目前是内存多维加权匹配，不是向量库——兼容端点没有 embedding 路由，这个取舍我可以讲清楚。
 
 ---
 
-## 面试官会追问的三句话（提前背熟）
+## 面试官可能追问（提前对齐口径）
 
-1. **为什么停车 / 落日不做成 Tool Calling？**  
-   横切、每次规划都需要、可用规则表达 → 前置注入，一轮模型调用。开放式任务（搜索、文件）才走 ReAct。
+1. **为什么通勤 / 营业时间 / 落日不做 Tool Calling？**  
+   每次规划都需要、可用规则表达 → 放在后处理，主链路一轮结构化调用。开放式任务才走 ReAct。
 
 2. **幻觉怎么压？**  
-   地点：私域候选池收敛生成空间。数值：服务端覆盖写入，不信模型填的云量和降水。营业时间故意不让模型编。
+   地点：Serper 高分池 + 禁止凭空捏造。数值：天气与距离由服务端覆盖。停车：只给 Maps 检索词，不编车库名。营业时间：走 Maps `openingHours`，解析失败时公园类降级为全天开放，而不是让模型编时刻。
 
 3. **为什么不是向量 RAG？**  
-   Gemini OpenAI 兼容端点没有 embedding 路由（404）。当前是内存多维加权匹配（店名 / 标签 / 氛围 / 视觉风格）。数据量上来后可以切回 PgVector，接口形态已经按检索服务拆开。
+   Gemini OpenAI 兼容端点没有 embedding。当前是标签 / 氛围 / 视觉风格的内存加权检索，接口已按检索服务拆开，数据量上来可切 PgVector。
 
 ---
 
@@ -75,9 +66,9 @@ I built a city itinerary agent, not a chatbot wrapper. The product problem is th
 
 | 避免 | 原因 |
 | --- | --- |
-| “基于向量数据库的 RAG” | 实现是内存关键词加权，追问召回率会穿帮 |
-| “接入 Google 停车 API 生产可用” | 默认 `parking.provider=mock`，Google 是预留实现 |
-| “高并发、熔断、分布式缓存” | Open-Meteo 调用目前是同步 + try/catch，没有超时/缓存，被问细节会被动 |
-| 把模板项目名 yu-ai-agent / 鱼皮 Manus 当自己的品牌 | 包名已迁到 `com.yeah.yeahaiagent`，口述统一用 Yeah AI Agent |
+| 「基于向量数据库 / Embedding 的 RAG」 | 实现是内存关键词加权，追问召回率会穿帮 |
+| 「接入 Google Places 停车 API / 真实车库库存」 | 停车是 Maps 检索意图，不是车库实体或官方停车 API |
+| 「高并发、熔断、分布式」 | 规划主链路仍是同步 Servlet + 串行外部调用 |
+| 沿用模板名 yu-ai-agent / 鱼皮 Manus | 对外统一用 **Yeah AI Agent** |
 
-如需把「下一步」写成加分项，用这一句即可：*Next: Caffeine cache keyed by city+date and RestClient timeouts on the weather path.* 这比假装已经做完更像一线工程师。
+投国内岗用中文 4～5 条即可，不必中英叠放。英文岗用英文四条。

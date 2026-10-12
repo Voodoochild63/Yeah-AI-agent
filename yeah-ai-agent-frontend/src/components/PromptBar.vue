@@ -6,6 +6,7 @@ import type { Lang } from '@/types/itinerary'
 const props = defineProps<{
   loading: boolean
   lang: Lang
+  hasPlan?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -21,7 +22,14 @@ const listening = ref(false)
 const speechError = ref('')
 
 const canSubmit = computed(() => text.value.trim().length > 0 && !props.loading)
-const placeholder = computed(() => (props.lang === 'en' ? 'Ask Yeah AI...' : '问问 Yeah AI...'))
+const placeholder = computed(() => {
+  if (props.hasPlan) {
+    return props.lang === 'en'
+      ? 'Swap dinner, or add Japanese food after sunset…'
+      : '把晚饭换成日料，或看完日落再加一顿日料…'
+  }
+  return props.lang === 'en' ? 'Ask Yeah AI...' : '问问 Yeah AI...'
+})
 const stopLabel = computed(() => (props.lang === 'en' ? 'Stop generating' : '停止生成'))
 const langLabel = computed(() => (props.lang === 'en' ? 'EN' : 'ZH'))
 const langTitle = computed(() =>

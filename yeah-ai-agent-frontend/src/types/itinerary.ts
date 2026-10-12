@@ -16,8 +16,39 @@ export interface SunsetEvaluation {
   cloudCover: number
   rainProb: number
   recommendationReason: string
-  recommendedSpot: string
+  recommendedSpot?: string
   photoTip: string
+}
+
+export type TravelMode = 'WALKING' | 'DRIVING' | 'TRANSIT'
+
+export type OpenStatus = 'OPEN' | 'CLOSING_SOON' | 'CLOSED' | 'UNKNOWN'
+
+export interface SpotCandidateDto {
+  name: string
+  categoryTag?: string
+  rating?: number
+  ratingCount?: number
+  latitude?: number
+  longitude?: number
+  openingHoursText?: string
+  address?: string
+  /** 短亮点，换点时若综述里出现旧短语则一并替换 */
+  highlightDesc?: string
+}
+
+export interface TransitModeOption {
+  durationText: string
+  distanceText: string
+  durationMinutes: number
+  distanceMeters?: number
+}
+
+export interface TransitOptions {
+  walking: TransitModeOption
+  driving: TransitModeOption
+  transit: TransitModeOption
+  drivingAllowed?: boolean
 }
 
 export interface ItineraryNode {
@@ -29,6 +60,21 @@ export interface ItineraryNode {
   arrivalTime: string
   stayDuration: string
   transitToNext: string
+  selectedMode?: TravelMode
+  transitOptions?: TransitOptions
+  latitude?: number
+  longitude?: number
+  estimatedArrival?: string
+  openStatus?: OpenStatus
+  statusWarning?: string
+  opensAt?: string
+  closesAt?: string
+  openingHoursText?: string
+  /** 主规划预置的同类备选，前端原地轮播 */
+  candidates?: SpotCandidateDto[]
+  /** 落日专属候选，通常与 candidates 同步 */
+  sunsetCandidates?: SpotCandidateDto[]
+
   /** 小红书 / RedNote：英文店名 + 拍照 机位 避坑 */
   searchKeyword?: string
   /** Reddit：纯英文店名与评价检索词 */
@@ -38,6 +84,11 @@ export interface ItineraryNode {
   parkingTips?: string
   parkingSearchKeyword?: string
   parkingInfo?: ParkingInfo
+  /** WALK / SCENIC / PARK / ATTRACTION / BAR / PUB / DESSERT / SHOPPING / KOREAN_RESTAURANT / DINING / CAFE / TEA / SUNSET */
+  spotCategory?: string
+  drivingForbidden?: boolean
+  alcoholInvolved?: boolean
+  safetyWarning?: string
 }
 
 export interface ItineraryPlan {
@@ -57,6 +108,19 @@ export interface ItineraryPlan {
   backupSuggestionsZh?: string[]
   backupSuggestionsEn?: string[]
   sunsetEvaluation?: SunsetEvaluation
+  /** 多轮局部修改会话，首次规划由后端签发 */
+  sessionId?: string
+}
+
+export type RefineAction = 'REPLACE' | 'APPEND' | 'INSERT_BEFORE' | 'DELETE'
+
+export interface ItineraryRefineResponse {
+  plan: ItineraryPlan
+  reason?: string
+  /** REPLACE 为被替换下标；APPEND 为新插入节点下标，用于高亮 */
+  targetIndex?: number
+  searchQuery?: string
+  action?: RefineAction
 }
 
 /** 对应后端 LanguageEnum */

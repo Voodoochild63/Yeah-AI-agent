@@ -3,6 +3,9 @@ spring:
     name: yeah-ai-agent
   profiles:
     active: local
+  threads:
+    virtual:
+      enabled: true
 # 临时注释掉，便于大家开发调试和部署（实际填写 PgVector 数据库信息）
 #  datasource:
 #    url: xxx
@@ -76,14 +79,14 @@ knife4j:
 search-api:
   # 需要替换为你自己的 key
   api-key: 你的 API Key
-# 智能停车：默认本地 mock，配置 google api-key 后可切换
-parking:
-  provider: mock # 可选 mock / google
-  google:
-    api-key: ${PARKING_GOOGLE_API_KEY:}
 serper:
   api-key: aca29742d1933b74fa6feeacab44bb230f69f50d
   base-url: https://google.serper.dev
+yeah:
+  upstream:
+    permits-per-second: 5
+    acquire-timeout: 3s
+    skeleton-ttl: 10m
 # 修改日志级别，查看 Spring AI 更多调用细节
 logging:
   level:
