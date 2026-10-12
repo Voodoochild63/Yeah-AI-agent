@@ -1,8 +1,11 @@
 import axios from 'axios'
 import type { ItineraryPlan, ItineraryRefineResponse, Lang, RagContext, SunsetEvaluation } from '@/types/itinerary'
 
+/** 生产构建读取 .env.production 的 VITE_API_BASE_URL；本地开发回退到 Vite 代理 /api */
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() || '/api'
+
 const http = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE ?? '/api',
+  baseURL: apiBaseUrl,
   // 大模型编排一次行程通常要 20~60 秒，默认超时会直接把请求掐断
   timeout: 120_000,
 })
@@ -110,7 +113,9 @@ export function toFriendlyError(error: unknown): string {
       return '请求超时了。大模型编排一次行程通常需要 20~60 秒，请稍后重试。'
     }
     if (!error.response) {
-      return '连不上后端服务。请确认 yeah-ai-agent 已在 http://localhost:8123 启动。'
+      return apiBaseUrl.startsWith('http')
+        ? '连不上后端服务。请稍后重试。'
+        : '连不上后端服务。请确认 yeah-ai-agent 已在 http://localhost:8123 启动。'
     }
     const data = error.response.data
     const serverMessage =
