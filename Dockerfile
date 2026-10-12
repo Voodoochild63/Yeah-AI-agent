@@ -6,11 +6,11 @@ WORKDIR /app
 COPY pom.xml .
 COPY src ./src
 
-# 使用 Maven 执行打包
+# 使用 Maven 执行打包，跳过测试
 RUN mvn clean package -DskipTests
 
-# 暴露应用端口
+# 本地默认端口；Render 等平台会注入 PORT，启动时优先使用它
 EXPOSE 8123
 
-# 使用生产环境配置启动应用
-CMD ["java", "-jar", "/app/target/yu-ai-agent-0.0.1-SNAPSHOT.jar", "--spring.profiles.active=prod"]
+# 通配符匹配 /app/target 下的 yeah-ai-agent-*.jar，并监听 $PORT
+CMD ["sh", "-c", "exec java -jar /app/target/yeah-ai-agent-*.jar --spring.profiles.active=prod --server.port=${PORT:-8123}"]
